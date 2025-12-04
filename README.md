@@ -19,7 +19,7 @@ The file structure is organized as follows:
 ```
 git/  
 ├── data/  
-│   └── dataset\_48.csv       \# Raw experimental data (48 participants)  
+│   └── dataset_48.csv       \# Raw experimental data (48 participants)  
 ├── scripts/  
 │   ├── data.py              \# Script for data preprocessing and cleaning  
 │   └── analysis.R           \# R script for statistical analysis and non-linear regression  
