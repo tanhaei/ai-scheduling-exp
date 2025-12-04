@@ -44,7 +44,7 @@ git/
 You will need **Python 3.9+** and **R** installed. First, install the required Python libraries:
 
 ```
-pip install \-r requirements.txt
+pip install -r requirements.txt
 ```
 
 ### **Running the Analysis**
