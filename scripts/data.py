@@ -12,7 +12,7 @@ plt.rcParams.update({
 })
 
 # خواندن دیتاست واقعی
-df = pd.read_csv('data/dataset_100.csv')
+df = pd.read_csv('data/dataset_48.csv')
 
 # ==========================================
 # نمودار ۱: مقایسه تلاش (Effort) - بر اساس دیتاست

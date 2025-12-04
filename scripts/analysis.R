@@ -15,7 +15,7 @@ library(dplyr)    # For data manipulation
 library(broom)    # For tidy summaries (optional)
 
 # Read the dataset
-df <- read.csv("../data/dataset_100.csv")
+df <- read.csv("../data/dataset_48.csv")
 cat("Dataset loaded: n =", nrow(df), "samples\n")
 
 # Add normalized schedule time (t_d / t_o): 1.0 for Nominal, 0.6 for Compressed
