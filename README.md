@@ -11,7 +11,8 @@ Status: Under Review / Published in Journal of Systems and Software
 Traditional software project scheduling models (most notably the **Putnam model**) postulate that compressing a project schedule below 75% of the nominal time results in an exponential increase in effort or project failure (a theoretical constraint known as the **"Impossible Region"**).
 
 This study empirically investigates whether Generative AI tools (such as GitHub Copilot) can challenge these decades-old assumptions. By conducting a controlled experiment with **48 professional software developers**, we found that AI-assisted teams can deliver acceptable software within the traditional impossible region. The results suggest that GenAI potentially reduces the Time Sensitivity Exponent ($\\alpha$) from $\\approx 3.8$ to $\\approx 1.8$.
-![Figure: Comparison of the Traditional Putnam Model vs. AI-Assisted Model. The red area depicts the traditional "Impossible Region".](Fig3_Theoretical_Curve.png)
+![Compare](Fig3_Theoretical_Curve.png)
+*Figure: Comparison of the Traditional Putnam Model vs. AI-Assisted Model. The red area depicts the traditional "Impossible Region".*
 
 ## **📂 Repository Structure**
 
