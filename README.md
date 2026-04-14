@@ -68,8 +68,6 @@ Based on the empirical analysis:
 
 If you use this dataset or code in your research, please cite the associated manuscript:
 
-Tanhaei, M., \& Alizadehsani, R. *Revisiting the "Impossible Region": An Empirical Study on the Security-Speed Trade-off of Generative Artificial Intelligence in Software Scheduling*. The Journal of Systems and Software.
-
 ## **⚖️ License**
 
 This project is licensed under the **MIT License**. You are free to use the data with appropriate attribution.
