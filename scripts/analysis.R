@@ -1,121 +1,137 @@
 # ==========================================
-# analysis.R: Nonlinear Least-Squares Fitting for Putnam Model
+# analysis.R: Exploratory alpha estimation for the manuscript
 # ==========================================
-# This script fits the AI-adjusted Putnam model to the experimental data.
-# Model: E = E_o * (t_o / t_d)^alpha
-# Fits separate models for Traditional (G1/G2) and AI-Assisted (G3/G4) groups.
-# Outputs: alpha_fitting.csv with alpha, 95% CI, and R².
+# This script reproduces the manuscript-referenced exploratory estimate
+# of the AI-assisted time-sensitivity exponent (alpha) and generates the
+# corresponding sensitivity figure.
+# Outputs:
+#   - alpha_fitting.csv
+#   - group_summary.csv
+#   - Fig4_Sensitivity.pdf
 # Author: Mohammad Tanhaei
-# Date: 2025-12-04
 # ==========================================
 
-# Load required libraries
-library(nls)      # For nonlinear least-squares
-library(dplyr)    # For data manipulation
-library(broom)    # For tidy summaries (optional)
-
-# Read the dataset
-df <- read.csv("../data/dataset_48.csv")
-cat("Dataset loaded: n =", nrow(df), "samples\n")
-
-# Add normalized schedule time (t_d / t_o): 1.0 for Nominal, 0.6 for Compressed
-df$td_to <- ifelse(df$Group %in% c("G2", "G4"), 0.6, 1.0)
-
-# Aggregate effort means by unique t_d (2 points per model: t=1 and t=0.6)
-trad_agg <- df[df$Group %in% c("G1", "G2"), ] %>%
-  group_by(td_to) %>%
-  summarise(Effort = mean(Effort_Hours), .groups = 'drop')
-cat("Traditional aggregate:\n")
-print(trad_agg)
-
-ai_agg <- df[df$Group %in% c("G3", "G4"), ] %>%
-  group_by(td_to) %>%
-  summarise(Effort = mean(Effort_Hours), .groups = 'drop')
-cat("AI aggregate:\n")
-print(ai_agg)
-
-# Define the Putnam model function
-putnam_model <- function(td, alpha, Eo) {
-  Eo * (1 / td)^alpha
-}
-
-# Fit Traditional Model (start with alpha=3.8, Eo=5.0)
-cat("\nFitting Traditional Model...\n")
-fit_trad <- tryCatch({
-  nls(Effort ~ putnam_model(td_to, alpha, Eo), 
-      data = trad_agg, 
-      start = list(alpha = 3.8, Eo = 5.0),
-      trace = TRUE,
-      control = nls.control(maxiter = 100, warnOnly = TRUE))
-}, error = function(e) {
-  cat("Warning: Fitting issues for Traditional. Using OLS approximation.\n")
-  # Fallback: Linearize log(E) = log(Eo) + alpha * log(1/td)
-  lm(log(Effort) ~ log(1 / td_to), data = trad_agg)
-})
-
-# Fit AI-Assisted Model (start with alpha=1.8, Eo=3.0)
-cat("\nFitting AI-Assisted Model...\n")
-fit_ai <- tryCatch({
-  nls(Effort ~ putnam_model(td_to, alpha, Eo), 
-      data = ai_agg, 
-      start = list(alpha = 1.8, Eo = 3.0),
-      trace = TRUE,
-      control = nls.control(maxiter = 100, warnOnly = TRUE))
-}, error = function(e) {
-  cat("Warning: Fitting issues for AI. Using OLS approximation.\n")
-  lm(log(Effort) ~ log(1 / td_to), data = ai_agg)
-})
-
-# Extract parameters (handle lm fallback)
-extract_alpha <- function(fit) {
-  if (inherits(fit, "nls")) {
-    alpha <- coef(fit)["alpha"]
-    se <- summary(fit)$parameters["alpha", "Std. Error"]
-  } else {  # lm fallback
-    alpha <- coef(fit)[2]  # Slope is alpha
-    se <- summary(fit)$coefficients[2, 2]
+get_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep('^--file=', args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub('^--file=', '', file_arg[1]))))
   }
-  ci <- alpha + c(-1.96 * se, 1.96 * se)
-  return(list(alpha = alpha, ci_lower = ci[1], ci_upper = ci[2], se = se))
+  return(getwd())
 }
 
-alpha_trad <- extract_alpha(fit_trad)
-alpha_ai <- extract_alpha(fit_ai)
+script_dir <- get_script_dir()
+repo_root <- normalizePath(file.path(script_dir, '..'))
+data_path <- file.path(repo_root, 'data', 'dataset_48.csv')
+alpha_csv_path <- file.path(repo_root, 'alpha_fitting.csv')
+summary_csv_path <- file.path(repo_root, 'group_summary.csv')
+figure_path <- file.path(repo_root, 'Fig4_Sensitivity.pdf')
 
-# Calculate R²
-calc_r2 <- function(fit, data) {
-  if (inherits(fit, "nls")) {
-    y_pred <- predict(fit)
-  } else {
-    y_pred <- exp(predict(fit))
-  }
-  y_obs <- data$Effort
-  1 - sum((y_obs - y_pred)^2) / sum((y_obs - mean(y_obs))^2)
+if (!file.exists(data_path)) {
+  stop(paste('Dataset not found:', data_path))
 }
 
-r2_trad <- calc_r2(fit_trad, trad_agg)
-r2_ai <- calc_r2(fit_ai, ai_agg)
+df <- read.csv(data_path, stringsAsFactors = FALSE)
+required_cols <- c('Group', 'Effort_Hours', 'Quality_Score', 'Success')
+missing_cols <- setdiff(required_cols, names(df))
+if (length(missing_cols) > 0) {
+  stop(paste('Missing required columns:', paste(missing_cols, collapse = ', ')))
+}
 
-# Prepare output DataFrame
-output <- data.frame(
-  Model = c("Traditional", "AI-Assisted"),
-  Alpha = c(alpha_trad$alpha, alpha_ai$alpha),
-  Alpha_CI_Lower = c(alpha_trad$ci_lower, alpha_ai$ci_lower),
-  Alpha_CI_Upper = c(alpha_trad$ci_upper, alpha_ai$ci_upper),
-  R2 = c(r2_trad, r2_ai),
+mean_ci <- function(x) {
+  n <- length(x)
+  m <- mean(x)
+  s <- sd(x)
+  se <- s / sqrt(n)
+  ci <- m + c(-1, 1) * 1.96 * se
+  c(mean = m, sd = s, ci_lower = ci[1], ci_upper = ci[2])
+}
+
+groups <- c('G1', 'G2', 'G3', 'G4')
+group_summary <- data.frame(
+  Group = character(0),
+  Effort_Mean = numeric(0),
+  Effort_SD = numeric(0),
+  Effort_CI_Lower = numeric(0),
+  Effort_CI_Upper = numeric(0),
+  Quality_Mean = numeric(0),
+  Quality_SD = numeric(0),
+  Quality_CI_Lower = numeric(0),
+  Quality_CI_Upper = numeric(0),
+  Success_Rate = numeric(0),
   stringsAsFactors = FALSE
 )
 
-# Save to CSV
-write.csv(output, "alpha_fitting.csv", row.names = FALSE)
-cat("\nFitting Results:\n")
-print(output)
-cat("\nCSV saved: alpha_fitting.csv\n")
+for (g in groups) {
+  subset_df <- df[df$Group == g, ]
+  effort_stats <- mean_ci(subset_df$Effort_Hours)
+  quality_stats <- mean_ci(subset_df$Quality_Score)
+  group_summary <- rbind(
+    group_summary,
+    data.frame(
+      Group = g,
+      Effort_Mean = effort_stats['mean'],
+      Effort_SD = effort_stats['sd'],
+      Effort_CI_Lower = effort_stats['ci_lower'],
+      Effort_CI_Upper = effort_stats['ci_upper'],
+      Quality_Mean = quality_stats['mean'],
+      Quality_SD = quality_stats['sd'],
+      Quality_CI_Lower = quality_stats['ci_lower'],
+      Quality_CI_Upper = quality_stats['ci_upper'],
+      Success_Rate = mean(subset_df$Success) * 100,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+write.csv(group_summary, summary_csv_path, row.names = FALSE)
 
-# Optional: Plot fitted curves (requires ggplot2)
-# library(ggplot2)
-# t_seq <- seq(0.4, 1.2, length.out = 100)
-# pred_trad <- predict(fit_trad, newdata = data.frame(td_to = t_seq))
-# pred_ai <- predict(fit_ai, newdata = data.frame(td_to = t_seq))
-# plot_data <- data.frame(t = t_seq, Trad = pred_trad, AI = pred_ai)
-# ggplot(plot_data, aes(x = t)) + geom_line(aes(y = Trad, color = "Traditional")) + geom_line(aes(y = AI, color = "AI")) + labs(title = "Fitted Effort Curves")
+# Manuscript-referenced summary values from Table 1 (G3/G4)
+reported_mean_g3 <- 3.06
+reported_sd_g3 <- 0.57
+reported_mean_g4 <- 3.42
+reported_sd_g4 <- 0.45
+reported_n <- 12
+compression_ratio <- 0.6
+
+alpha_point <- log(reported_mean_g4 / reported_mean_g3) / log(1 / compression_ratio)
+
+set.seed(42)
+bootstrap_reps <- 10000
+sampled_g3 <- pmax(rnorm(bootstrap_reps, mean = reported_mean_g3, sd = reported_sd_g3 / sqrt(reported_n)), 1e-6)
+sampled_g4 <- pmax(rnorm(bootstrap_reps, mean = reported_mean_g4, sd = reported_sd_g4 / sqrt(reported_n)), 1e-6)
+alpha_boot <- log(sampled_g4 / sampled_g3) / log(1 / compression_ratio)
+alpha_ci <- as.numeric(quantile(alpha_boot, c(0.025, 0.975)))
+
+alpha_output <- data.frame(
+  Metric = 'AI_Time_Sensitivity_Exponent',
+  Point_Estimate = round(alpha_point, 3),
+  CI_Lower = round(alpha_ci[1], 3),
+  CI_Upper = round(alpha_ci[2], 3),
+  Bootstrap_Replicates = bootstrap_reps,
+  Basis = 'Manuscript Table 1 effort summaries for G3 and G4',
+  stringsAsFactors = FALSE
+)
+write.csv(alpha_output, alpha_csv_path, row.names = FALSE)
+
+pdf(figure_path, width = 8, height = 6, family = 'serif')
+hist(
+  alpha_boot,
+  breaks = 30,
+  col = 'gray85',
+  border = 'white',
+  main = 'Bootstrap Distribution of the Exploratory AI-Assisted Exponent',
+  xlab = expression(hat(alpha)[AI])
+)
+abline(v = alpha_point, lwd = 2)
+abline(v = alpha_ci, lwd = 2, lty = 2)
+mtext(
+  sprintf('Point estimate = %.2f | 95%% bootstrap CI [%.2f, %.2f]', alpha_point, alpha_ci[1], alpha_ci[2]),
+  side = 3,
+  line = 0.5,
+  cex = 0.85
+)
+dev.off()
+
+cat('Saved:', basename(summary_csv_path), '\n')
+cat('Saved:', basename(alpha_csv_path), '\n')
+cat('Saved:', basename(figure_path), '\n')

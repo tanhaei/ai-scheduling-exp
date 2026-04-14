@@ -1,0 +1,2 @@
+Metric,Point_Estimate,CI_Lower,CI_Upper,Bootstrap_Replicates,Basis
+AI_Time_Sensitivity_Exponent,0.218,-0.027,0.485,10000,Manuscript Table 1 effort summaries for G3 and G4

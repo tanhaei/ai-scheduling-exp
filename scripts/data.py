@@ -1,104 +1,125 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
 import pandas as pd
 
-# تنظیمات برای خروجی PDF و فونت‌های استاندارد
-sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = REPO_ROOT / 'data' / 'dataset_48.csv'
+
 plt.rcParams.update({
-    "font.family": "serif",
-    "pdf.fonttype": 42,   # برای جلوگیری از تبدیل فونت به منحنی
-    "ps.fonttype": 42
+    'font.family': 'serif',
+    'pdf.fonttype': 42,
+    'ps.fonttype': 42,
 })
 
-# خواندن دیتاست واقعی
-df = pd.read_csv('data/dataset_48.csv')
 
-# ==========================================
-# نمودار ۱: مقایسه تلاش (Effort) - بر اساس دیتاست
-# ==========================================
-effort_summary = df.groupby('Group')['Effort_Hours'].agg(['mean', 'std']).reset_index()
-effort_summary.columns = ['Group', 'Effort', 'SD']
-# Labelهای گروهی
+def validate_columns(df: pd.DataFrame, required: list[str]) -> None:
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f'Missing required columns in dataset: {missing}')
+
+
+# Load dataset
+if not DATA_PATH.exists():
+    raise FileNotFoundError(f'Dataset not found: {DATA_PATH}')
+
+df = pd.read_csv(DATA_PATH)
+validate_columns(df, ['Group', 'Effort_Hours', 'Quality_Score'])
+
 labels = {
     'G1': 'G1\n(Trad-Nominal)',
     'G2': 'G2\n(Trad-Compressed)',
     'G3': 'G3\n(AI-Nominal)',
-    'G4': 'G4\n(AI-Compressed)'
+    'G4': 'G4\n(AI-Compressed)',
 }
-effort_summary['Group'] = effort_summary['Group'].map(labels)
-
-plt.figure(figsize=(8, 6))
-colors = ["#34495e", "#34495e", "#2ecc71", "#2ecc71"]
-bar = sns.barplot(x='Group', y='Effort', data=effort_summary, palette=colors, capsize=.1, errorbar=None)
-
-# اضافه کردن Error Bars دستی
-x_coords = [p.get_x() + 0.5 * p.get_width() for p in bar.patches]
-y_coords = [p.get_height() for p in bar.patches]
-plt.errorbar(x=x_coords, y=y_coords, yerr=effort_summary['SD'], fmt='none', c='black', capsize=5)
-
-plt.axhline(y=6.0, color='gray', linestyle='--', alpha=0.5, label='Nominal Time ($t_o$)')
-plt.axhline(y=3.5, color='red', linestyle='--', alpha=0.7, label='Compressed Time ($0.6t_o$)')
-
-plt.ylabel('Effort (Person-Hours)', fontweight='bold')
-plt.xlabel('')
-plt.title('Impact of AI on Effort under Time Pressure', fontweight='bold')
-plt.legend()
-plt.tight_layout()
-plt.savefig('Fig1_Effort_Analysis.pdf', format='pdf', bbox_inches='tight')
-plt.close()
+order = ['G1', 'G2', 'G3', 'G4']
 
 # ==========================================
-# نمودار ۲: توزیع کیفیت (Quality) - بر اساس دیتاست
+# Figure 1: Observed effort across groups
 # ==========================================
-plt.figure(figsize=(8, 6))
-box = sns.boxplot(x='Group', y='Quality_Score', data=df, palette="Set2", width=0.5)
-plt.axhline(y=75, color='red', linestyle='-.', linewidth=2, label='Min Acceptable Quality (75)')
+effort_summary = (
+    df.groupby('Group', as_index=False)['Effort_Hours']
+    .agg(['mean', 'std'])
+    .reset_index()
+    .rename(columns={'mean': 'Effort', 'std': 'SD'})
+)
+effort_summary = effort_summary[effort_summary['Group'].isin(order)].copy()
+effort_summary['Label'] = effort_summary['Group'].map(labels)
 
-# Annotation برای Success Rate (محاسبه از دیتاست)
-success_rates = df.groupby('Group')['Success'].mean().round(2) * 100
-for i, (group, rate) in enumerate(success_rates.items()):
-    plt.text(i, 95, f'Success: {rate}%', ha='center', va='bottom', fontweight='bold', fontsize=10)
-
-plt.ylabel('Code Quality Score (0-100)', fontweight='bold')
-plt.title('Code Quality Distribution Across Groups', fontweight='bold')
-plt.legend(loc='lower left')
-plt.tight_layout()
-plt.savefig('Fig2_Quality_Distribution.pdf', format='pdf', bbox_inches='tight')
-plt.close()
+fig, ax = plt.subplots(figsize=(8, 6))
+x = np.arange(len(effort_summary))
+colors = ['#34495e', '#34495e', '#2ecc71', '#2ecc71']
+ax.bar(x, effort_summary['Effort'], yerr=effort_summary['SD'], capsize=5, color=colors)
+ax.axhline(y=6.0, color='gray', linestyle='--', alpha=0.6, label='Nominal Time ($t_o$)')
+ax.axhline(y=3.5, color='red', linestyle='--', alpha=0.8, label='Compressed Time ($0.6t_o$)')
+ax.set_xticks(x)
+ax.set_xticklabels(effort_summary['Label'])
+ax.set_ylabel('Effort (Person-Hours)', fontweight='bold')
+ax.set_xlabel('')
+ax.set_title('Observed Effort Across Experimental Groups', fontweight='bold')
+ax.legend()
+fig.tight_layout()
+fig.savefig(REPO_ROOT / 'Fig1_Effort_Analysis.pdf', format='pdf', bbox_inches='tight')
+plt.close(fig)
 
 # ==========================================
-# نمودار ۳: منحنی تئوری (Theoretical Curve) - بدون تغییر، اما با CI
+# Figure 2: Quality distribution across groups
 # ==========================================
-t = np.linspace(0.4, 1.2, 100)
+fig, ax = plt.subplots(figsize=(8, 6))
+quality_data = [df.loc[df['Group'] == group, 'Quality_Score'].to_numpy() for group in order]
+box = ax.boxplot(quality_data, tick_labels=[labels[g] for g in order], patch_artist=True, widths=0.55)
+box_colors = ['#95a5a6', '#95a5a6', '#a3e4a8', '#a3e4a8']
+for patch, color in zip(box['boxes'], box_colors):
+    patch.set_facecolor(color)
+
+ax.axhline(y=75, color='red', linestyle='-.', linewidth=2, label='Min Acceptable Quality (75)')
+if 'Success' in df.columns:
+    success_rates = df.groupby('Group')['Success'].mean().reindex(order).fillna(0) * 100
+else:
+    success_rates = df.assign(Success=(df['Quality_Score'] >= 75).astype(int)).groupby('Group')['Success'].mean().reindex(order).fillna(0) * 100
+
+for idx, rate in enumerate(success_rates, start=1):
+    ax.text(idx, 96, f'Success: {round(rate):.0f}%', ha='center', va='bottom', fontweight='bold', fontsize=10)
+
+ax.set_ylabel('Code Quality Score (0-100)', fontweight='bold')
+ax.set_title('Composite Quality Scores Across Groups', fontweight='bold')
+ax.legend(loc='lower left')
+fig.tight_layout()
+fig.savefig(REPO_ROOT / 'Fig2_Quality_Distribution.pdf', format='pdf', bbox_inches='tight')
+plt.close(fig)
+
+# ==========================================
+# Figure 3: Illustrative theoretical curve
+# ==========================================
+t = np.linspace(0.4, 1.2, 200)
 Eo = 1.0
-E_classic = Eo * (1/t)**4
-alpha_ai = 1.8
-E_ai = Eo * (1/t)**alpha_ai
+alpha_classic = 4.0
+alpha_ai_illustrative = 1.8
+alpha_ai_low = 1.3
+alpha_ai_high = 2.3
 
-# CI bands برای α AI: [1.6, 2.0]
-E_ai_low = Eo * (1/t)**1.6
-E_ai_high = Eo * (1/t)**2.0
+E_classic = Eo * (1 / t) ** alpha_classic
+E_ai = Eo * (1 / t) ** alpha_ai_illustrative
+E_ai_low = Eo * (1 / t) ** alpha_ai_low
+E_ai_high = Eo * (1 / t) ** alpha_ai_high
 
-plt.figure(figsize=(8, 6))
-plt.plot(t, E_classic, label='Traditional Model (Putnam: $\\alpha=4$)', color='black', linestyle='--')
-plt.plot(t, E_ai, label='AI-Assisted Model ($\\alpha\\approx1.8$)', color='green', linewidth=3)
+fig, ax = plt.subplots(figsize=(8, 6))
+ax.plot(t, E_classic, label='Traditional Model (Putnam: $\\alpha = 4$)', color='black', linestyle='--')
+ax.plot(t, E_ai, label='Illustrative AI-Assisted Curve', color='green', linewidth=3)
+ax.fill_between(t, E_ai_low, E_ai_high, color='green', alpha=0.2, label='Illustrative sensitivity band')
+ax.axvspan(0.4, 0.75, color='red', alpha=0.1, label='Traditional "Impossible Region"')
+ax.axvline(x=0.75, color='red', linestyle=':')
+ax.set_ylim(0, 5)
+ax.set_xlim(0.4, 1.1)
+ax.set_xlabel('Normalized Schedule Time ($t_d / t_o$)', fontweight='bold')
+ax.set_ylabel('Normalized Effort ($E / E_o$)', fontweight='bold')
+ax.set_title('Illustrative Comparison: Traditional vs. AI-Assisted Curves', fontweight='bold')
+ax.legend()
+ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+fig.tight_layout()
+fig.savefig(REPO_ROOT / 'Fig3_Theoretical_Curve.pdf', format='pdf', bbox_inches='tight')
+plt.close(fig)
 
-# Shaded band برای CI
-plt.fill_between(t, E_ai_low, E_ai_high, color='green', alpha=0.2, label='95% CI: [1.6-2.0]')
-
-plt.axvspan(0.4, 0.75, color='red', alpha=0.1, label='Traditional "Impossible Region"')
-plt.axvline(x=0.75, color='red', linestyle=':')
-
-plt.ylim(0, 5)
-plt.xlim(0.4, 1.1)
-plt.xlabel('Normalized Schedule Time ($t_d / t_o$)', fontweight='bold')
-plt.ylabel('Normalized Effort ($E / E_o$)', fontweight='bold')
-plt.title('Flattening the Cost Curve: AI vs. Traditional', fontweight='bold')
-plt.legend()
-plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-plt.tight_layout()
-plt.savefig('Fig3_Theoretical_Curve.pdf', format='pdf', bbox_inches='tight')
-plt.close()
-
-print("All three figures saved as PDF files based on the dataset.")
+print('Figures saved: Fig1_Effort_Analysis.pdf, Fig2_Quality_Distribution.pdf, Fig3_Theoretical_Curve.pdf')
