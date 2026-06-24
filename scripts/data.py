@@ -28,16 +28,17 @@ if not DATA_PATH.exists():
 df = pd.read_csv(DATA_PATH)
 validate_columns(df, ['Group', 'Effort_Hours', 'Quality_Score'])
 
+# Group labels match the manuscript (manual vs. AI-assisted developers).
 labels = {
-    'G1': 'G1\n(Trad-Nominal)',
-    'G2': 'G2\n(Trad-Compressed)',
+    'G1': 'G1\n(Manual-Nominal)',
+    'G2': 'G2\n(Manual-Compressed)',
     'G3': 'G3\n(AI-Nominal)',
     'G4': 'G4\n(AI-Compressed)',
 }
 order = ['G1', 'G2', 'G3', 'G4']
 
 # ==========================================
-# Figure 1: Observed effort across groups
+# Figure 1: Observed within-task effort across groups
 # ==========================================
 effort_summary = (
     df.groupby('Group', as_index=False)['Effort_Hours']
@@ -58,14 +59,14 @@ ax.set_xticks(x)
 ax.set_xticklabels(effort_summary['Label'])
 ax.set_ylabel('Effort (Person-Hours)', fontweight='bold')
 ax.set_xlabel('')
-ax.set_title('Observed Effort Across Experimental Groups', fontweight='bold')
+ax.set_title('Observed Within-Task Effort Across Experimental Groups', fontweight='bold')
 ax.legend()
 fig.tight_layout()
 fig.savefig(REPO_ROOT / 'Fig1_Effort_Analysis.pdf', format='pdf', bbox_inches='tight')
 plt.close(fig)
 
 # ==========================================
-# Figure 2: Quality distribution across groups
+# Figure 2: Composite quality distribution across groups
 # ==========================================
 fig, ax = plt.subplots(figsize=(8, 6))
 quality_data = [df.loc[df['Group'] == group, 'Quality_Score'].to_numpy() for group in order]
@@ -74,7 +75,8 @@ box_colors = ['#95a5a6', '#95a5a6', '#a3e4a8', '#a3e4a8']
 for patch, color in zip(box['boxes'], box_colors):
     patch.set_facecolor(color)
 
-ax.axhline(y=75, color='red', linestyle='-.', linewidth=2, label='Min Acceptable Quality (75)')
+ax.axhline(y=75, color='red', linestyle='-.', linewidth=2, label='Acceptability Threshold (75)')
+# Success is reported as the share of submissions reaching Q >= 75.
 if 'Success' in df.columns:
     success_rates = df.groupby('Group')['Success'].mean().reindex(order).fillna(0) * 100
 else:
@@ -83,7 +85,7 @@ else:
 for idx, rate in enumerate(success_rates, start=1):
     ax.text(idx, 96, f'Success: {round(rate):.0f}%', ha='center', va='bottom', fontweight='bold', fontsize=10)
 
-ax.set_ylabel('Code Quality Score (0-100)', fontweight='bold')
+ax.set_ylabel('Composite Quality Score (0-100)', fontweight='bold')
 ax.set_title('Composite Quality Scores Across Groups', fontweight='bold')
 ax.legend(loc='lower left')
 fig.tight_layout()
@@ -91,14 +93,17 @@ fig.savefig(REPO_ROOT / 'Fig2_Quality_Distribution.pdf', format='pdf', bbox_inch
 plt.close(fig)
 
 # ==========================================
-# Figure 3: Illustrative theoretical curve
+# Figure 3: Illustrative (conceptual) theoretical curve
+# This figure is a conceptual contrast only; it is NOT fitted to the
+# experimental data. The AI-assisted curve uses an illustrative exponent
+# (alpha = 2.0), matching the manuscript figure caption.
 # ==========================================
 t = np.linspace(0.4, 1.2, 200)
 Eo = 1.0
 alpha_classic = 4.0
-alpha_ai_illustrative = 1.8
-alpha_ai_low = 1.3
-alpha_ai_high = 2.3
+alpha_ai_illustrative = 2.0
+alpha_ai_low = 1.6
+alpha_ai_high = 2.4
 
 E_classic = Eo * (1 / t) ** alpha_classic
 E_ai = Eo * (1 / t) ** alpha_ai_illustrative
@@ -106,16 +111,16 @@ E_ai_low = Eo * (1 / t) ** alpha_ai_low
 E_ai_high = Eo * (1 / t) ** alpha_ai_high
 
 fig, ax = plt.subplots(figsize=(8, 6))
-ax.plot(t, E_classic, label='Traditional Model (Putnam: $\\alpha = 4$)', color='black', linestyle='--')
-ax.plot(t, E_ai, label='Illustrative AI-Assisted Curve', color='green', linewidth=3)
-ax.fill_between(t, E_ai_low, E_ai_high, color='green', alpha=0.2, label='Illustrative sensitivity band')
-ax.axvspan(0.4, 0.75, color='red', alpha=0.1, label='Traditional "Impossible Region"')
+ax.plot(t, E_classic, label='Classical Putnam curve ($\\alpha = 4$)', color='black', linestyle='--')
+ax.plot(t, E_ai, label='Illustrative AI-assisted curve ($\\alpha = 2.0$)', color='green', linewidth=3)
+ax.fill_between(t, E_ai_low, E_ai_high, color='green', alpha=0.2, label='Conceptual sensitivity band')
+ax.axvspan(0.4, 0.75, color='red', alpha=0.1, label='High-sensitivity region (conceptual)')
 ax.axvline(x=0.75, color='red', linestyle=':')
 ax.set_ylim(0, 5)
 ax.set_xlim(0.4, 1.1)
 ax.set_xlabel('Normalized Schedule Time ($t_d / t_o$)', fontweight='bold')
 ax.set_ylabel('Normalized Effort ($E / E_o$)', fontweight='bold')
-ax.set_title('Illustrative Comparison: Traditional vs. AI-Assisted Curves', fontweight='bold')
+ax.set_title('Conceptual Comparison: Classical vs. AI-Assisted Curves', fontweight='bold')
 ax.legend()
 ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 fig.tight_layout()

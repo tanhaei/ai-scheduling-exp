@@ -1,2 +1,3 @@
 Metric,Point_Estimate,CI_Lower,CI_Upper,Bootstrap_Replicates,Basis
-AI_Time_Sensitivity_Exponent,0.218,-0.027,0.485,10000,Manuscript Table 1 effort summaries for G3 and G4
+AI_Time_Sensitivity_Exponent_GroupBootstrap,0.215,-0.03,0.482,10000,Table 4 effort summaries for G3 and G4 (group-level bootstrap)
+AI_Time_Sensitivity_Exponent_IndividualBootstrap,0.215,-0.022,0.462,10000,Participant-level G3/G4 session effort (individual-level bootstrap)
