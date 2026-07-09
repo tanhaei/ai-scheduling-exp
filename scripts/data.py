@@ -53,10 +53,14 @@ fig, ax = plt.subplots(figsize=(8, 6))
 x = np.arange(len(effort_summary))
 colors = ['#34495e', '#34495e', '#2ecc71', '#2ecc71']
 ax.bar(x, effort_summary['Effort'], yerr=effort_summary['SD'], capsize=5, color=colors)
+for xi, (val, grp) in enumerate(zip(effort_summary['Effort'], effort_summary['Group'])):
+    label = f'{val:.2f}\n(Hard cap)' if grp == 'G2' else f'{val:.2f}'
+    ax.text(xi, val + 0.18, label, ha='center', va='bottom', fontweight='bold', fontsize=10)
 ax.axhline(y=6.0, color='gray', linestyle='--', alpha=0.6, label='Nominal Time ($t_o$)')
 ax.axhline(y=3.5, color='red', linestyle='--', alpha=0.8, label='Compressed Time ($0.6t_o$)')
 ax.set_xticks(x)
 ax.set_xticklabels(effort_summary['Label'])
+ax.set_ylim(0, 6.9)
 ax.set_ylabel('Effort (Person-Hours)', fontweight='bold')
 ax.set_xlabel('')
 ax.set_title('Observed Within-Task Effort Across Experimental Groups', fontweight='bold')
@@ -66,25 +70,28 @@ fig.savefig(REPO_ROOT / 'Fig1_Effort_Analysis.pdf', format='pdf', bbox_inches='t
 plt.close(fig)
 
 # ==========================================
-# Figure 2: Composite quality distribution across groups
+# Figure 2: Composite quality scores across groups (mean +/- SD),
+# matching manuscript Figure 3.
 # ==========================================
 fig, ax = plt.subplots(figsize=(8, 6))
-quality_data = [df.loc[df['Group'] == group, 'Quality_Score'].to_numpy() for group in order]
-box = ax.boxplot(quality_data, tick_labels=[labels[g] for g in order], patch_artist=True, widths=0.55)
-box_colors = ['#95a5a6', '#95a5a6', '#a3e4a8', '#a3e4a8']
-for patch, color in zip(box['boxes'], box_colors):
-    patch.set_facecolor(color)
+q_mean = df.groupby('Group')['Quality_Score'].mean().reindex(order)
+q_sd = df.groupby('Group')['Quality_Score'].std().reindex(order)
+bar_colors = ['#34495e', '#34495e', '#2ecc71', '#2ecc71']
+x = np.arange(len(order))
+ax.bar(x, q_mean, yerr=q_sd, capsize=5, color=bar_colors)
 
 ax.axhline(y=75, color='red', linestyle='-.', linewidth=2, label='Acceptability Threshold (75)')
 # Success is reported as the share of submissions reaching Q >= 75.
-if 'Success' in df.columns:
-    success_rates = df.groupby('Group')['Success'].mean().reindex(order).fillna(0) * 100
-else:
-    success_rates = df.assign(Success=(df['Quality_Score'] >= 75).astype(int)).groupby('Group')['Success'].mean().reindex(order).fillna(0) * 100
+success_rates = (df.assign(S=(df['Quality_Score'] >= 75).astype(int))
+                 .groupby('Group')['S'].mean().reindex(order).fillna(0) * 100)
 
-for idx, rate in enumerate(success_rates, start=1):
-    ax.text(idx, 96, f'Success: {round(rate):.0f}%', ha='center', va='bottom', fontweight='bold', fontsize=10)
+for xi, (mval, rate) in enumerate(zip(q_mean, success_rates)):
+    ax.text(xi, mval + 1.5, f'{mval:.1f}', ha='center', va='bottom', fontweight='bold', fontsize=10)
+    ax.text(xi, 103, f'Success: {rate:.0f}%', ha='center', va='bottom', fontweight='bold', fontsize=10)
 
+ax.set_xticks(x)
+ax.set_xticklabels([labels[g] for g in order])
+ax.set_ylim(0, 112)
 ax.set_ylabel('Composite Quality Score (0-100)', fontweight='bold')
 ax.set_title('Composite Quality Scores Across Groups', fontweight='bold')
 ax.legend(loc='lower left')

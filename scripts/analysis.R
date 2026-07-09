@@ -1,15 +1,19 @@
 # ==========================================
 # analysis.R: Exploratory alpha estimation for the manuscript
 # ==========================================
-# This script reproduces the manuscript-referenced exploratory estimate
-# of the AI-assisted time-sensitivity exponent (alpha), the group-level
-# summary table (Table 4), and the corresponding sensitivity figure.
+# Reproduces the manuscript-referenced exploratory estimate of the
+# AI-assisted time-sensitivity exponent (alpha, Section 5.5), the
+# group-level summary table (Table 4), and Figure 4.
 #
 # Notes on interpretation (consistent with the manuscript):
 #   - alpha is an EXPLORATORY, task-specific descriptor, not a stable
-#     parameter. Its bootstrap interval crosses zero.
-#   - The estimate is derived from the observed AI-assisted conditions
-#     (G3, G4) summarized in Table 4 of the manuscript.
+#     parameter. Both bootstrap intervals include zero.
+#   - The group-level estimate fits Eq. (2) to the observed AI-assisted
+#     cell means (G3 nominal, G4 compressed); the participant-level
+#     estimate uses a log-scale estimator with participant resampling.
+#   - The schedule-compression ratio is the ACTUAL ratio of the two
+#     conditions, t_d / t_o = 3.5 / 6.0 (Table 3), not the rounded 0.6
+#     used descriptively in the text.
 #
 # Outputs:
 #   - alpha_fitting.csv
@@ -88,82 +92,108 @@ write.csv(group_summary, summary_csv_path, row.names = FALSE)
 
 # ------------------------------------------------------------------
 # Exploratory AI-assisted time-sensitivity exponent (alpha)
-# Derived from the observed AI-assisted conditions (G3 nominal, G4
-# compressed) using the descriptive model E_AI ~ (t_o / t_d)^alpha.
+# Descriptive model (manuscript Eq. 2): E_AI ~ (t_o / t_d)^alpha,
+# fitted to the observed AI-assisted conditions (G3 nominal, G4
+# compressed). The compression ratio is the actual t_d / t_o = 3.5/6.
 # ------------------------------------------------------------------
-compression_ratio <- 0.6  # 3.5h compressed cap ~ 0.6 * 6.0h nominal
+t_o <- 6.0
+t_d <- 3.5
+log_ratio <- log(t_o / t_d)
 
 g3_effort <- df$Effort_Hours[df$Group == 'G3']
 g4_effort <- df$Effort_Hours[df$Group == 'G4']
+n_cell <- length(g3_effort)
 
-alpha_from_means <- function(e3, e4) {
-  log(mean(e4) / mean(e3)) / log(1 / compression_ratio)
-}
+# Group-level (plug-in) estimator: ratio of cell means.
+alpha_group <- log(mean(g4_effort) / mean(g3_effort)) / log_ratio
 
-alpha_point <- alpha_from_means(g3_effort, g4_effort)
+# Participant-level (log-scale) estimator: difference of mean logs.
+alpha_indiv <- (mean(log(g4_effort)) - mean(log(g3_effort))) / log_ratio
 
 set.seed(42)
-bootstrap_reps <- 10000
+bootstrap_reps <- 100000
 
-# (a) Group-summary bootstrap: resample group means under the observed
-#     cell means and standard deviations.
-n_cell <- length(g3_effort)
-boot_summary <- replicate(bootstrap_reps, {
+# (a) Group-summary bootstrap: resample cell means under the observed
+#     means and standard errors (normal approximation). This is the
+#     distribution shown in Figure 4.
+boot_group <- replicate(bootstrap_reps, {
   s3 <- max(rnorm(1, mean(g3_effort), sd(g3_effort) / sqrt(n_cell)), 1e-6)
   s4 <- max(rnorm(1, mean(g4_effort), sd(g4_effort) / sqrt(n_cell)), 1e-6)
-  log(s4 / s3) / log(1 / compression_ratio)
+  log(s4 / s3) / log_ratio
 })
-ci_summary <- as.numeric(quantile(boot_summary, c(0.025, 0.975)))
+ci_group <- as.numeric(quantile(boot_group, c(0.025, 0.975)))
 
-# (b) Individual-level bootstrap: resample the actual participant-level
-#     effort vectors (preferred when participant-level data are available).
-boot_individual <- replicate(bootstrap_reps, {
-  s3 <- mean(sample(g3_effort, n_cell, replace = TRUE))
-  s4 <- mean(sample(g4_effort, n_cell, replace = TRUE))
-  log(s4 / s3) / log(1 / compression_ratio)
+# (b) Participant-level bootstrap: resample the raw effort vectors and
+#     recompute the log-scale estimator.
+boot_indiv <- replicate(bootstrap_reps, {
+  s3 <- sample(g3_effort, n_cell, replace = TRUE)
+  s4 <- sample(g4_effort, n_cell, replace = TRUE)
+  (mean(log(s4)) - mean(log(s3))) / log_ratio
 })
-ci_individual <- as.numeric(quantile(boot_individual, c(0.025, 0.975)))
+ci_indiv <- as.numeric(quantile(boot_indiv, c(0.025, 0.975)))
 
 alpha_output <- data.frame(
   Metric = c('AI_Time_Sensitivity_Exponent_GroupBootstrap',
              'AI_Time_Sensitivity_Exponent_IndividualBootstrap'),
-  Point_Estimate = round(c(alpha_point, alpha_point), 3),
-  CI_Lower = round(c(ci_summary[1], ci_individual[1]), 3),
-  CI_Upper = round(c(ci_summary[2], ci_individual[2]), 3),
+  Point_Estimate = round(c(alpha_group, alpha_indiv), 3),
+  CI_Lower = round(c(ci_group[1], ci_indiv[1]), 3),
+  CI_Upper = round(c(ci_group[2], ci_indiv[2]), 3),
   Bootstrap_Replicates = c(bootstrap_reps, bootstrap_reps),
-  Basis = c('Table 4 effort summaries for G3 and G4 (group-level bootstrap)',
-            'Participant-level G3/G4 session effort (individual-level bootstrap)'),
+  Basis = c('Cell means/SDs for G3 and G4 (group-level bootstrap, ratio-of-means estimator)',
+            'Participant-level G3/G4 session effort (log-scale estimator, participant resampling)'),
   stringsAsFactors = FALSE
 )
 write.csv(alpha_output, alpha_csv_path, row.names = FALSE)
 
-# Null-hypothesis tests reported in the manuscript (Section 5.5).
-p_vs_zero <- mean(boot_individual <= 0) * 2          # two-sided vs alpha = 0
-p_vs_four <- mean(boot_individual >= 4) * 2          # two-sided vs alpha = 4
-p_vs_zero <- min(p_vs_zero, 1)
-p_vs_four <- min(max(p_vs_four, 1 / bootstrap_reps), 1)
+# Null-hypothesis tests reported in the manuscript (Section 5.5):
+# Welch t tests on log-transformed session effort against alpha = 0
+# (no schedule sensitivity) and alpha = 4 (classical project-scale value).
+welch_log_test <- function(alpha0) {
+  d <- mean(log(g4_effort)) - mean(log(g3_effort)) - alpha0 * log_ratio
+  v3 <- var(log(g3_effort)) / n_cell
+  v4 <- var(log(g4_effort)) / n_cell
+  se <- sqrt(v3 + v4)
+  dfree <- (v3 + v4)^2 / (v3^2 / (n_cell - 1) + v4^2 / (n_cell - 1))
+  2 * pt(abs(d / se), df = dfree, lower.tail = FALSE)
+}
+p_vs_zero <- welch_log_test(0)
+p_vs_four <- welch_log_test(4)
 
+# Descriptive offloading factor implied by the nominal-schedule cells
+# (manuscript Section 5.5): mu-hat = 1 - E(G3)/E(G1).
+g1_effort <- df$Effort_Hours[df$Group == 'G1']
+mu_hat <- 1 - mean(g3_effort) / mean(g1_effort)
+
+# Figure 4: bootstrap distribution of the group-level exploratory
+# exponent (the interval crossing zero motivates cautious
+# interpretation; see manuscript Figure 4).
 pdf(figure_path, width = 8, height = 6, family = 'serif')
 hist(
-  boot_individual,
-  breaks = 30,
-  col = 'gray85',
+  boot_group,
+  breaks = 40,
+  col = '#7fa8d9',
   border = 'white',
-  main = 'Bootstrap Distribution of the Exploratory AI-Assisted Exponent',
-  xlab = expression(hat(alpha)[AI])
+  main = expression(paste('Bootstrap distribution of ', alpha, ' (AI-assisted conditions)')),
+  xlab = expression(paste('Estimated AI time-sensitivity exponent (', alpha, ')')),
+  ylab = 'Bootstrap count'
 )
-abline(v = alpha_point, lwd = 2)
-abline(v = ci_individual, lwd = 2, lty = 2)
-mtext(
-  sprintf('Point estimate = %.2f | 95%% bootstrap CI [%.2f, %.2f]',
-          alpha_point, ci_individual[1], ci_individual[2]),
-  side = 3, line = 0.5, cex = 0.85
+abline(v = alpha_group, lwd = 2, lty = 2, col = '#1f4e8c')
+abline(v = ci_group, lwd = 2, lty = 3, col = '#1f4e8c')
+legend(
+  'topright',
+  legend = c(sprintf('Estimate: %.2f', alpha_group),
+             sprintf('95%% CI: [%.2f, %.2f]', ci_group[1], ci_group[2])),
+  lty = c(2, 3), lwd = 2, col = '#1f4e8c', bty = 'n'
 )
 dev.off()
 
 cat('Saved:', basename(summary_csv_path), '\n')
 cat('Saved:', basename(alpha_csv_path), '\n')
 cat('Saved:', basename(figure_path), '\n')
-cat(sprintf('alpha point estimate = %.3f\n', alpha_point))
-cat(sprintf('group-bootstrap 95%% CI [%.3f, %.3f]\n', ci_summary[1], ci_summary[2]))
-cat(sprintf('individual-bootstrap 95%% CI [%.3f, %.3f]\n', ci_individual[1], ci_individual[2]))
+cat(sprintf('alpha (group, plug-in)      = %.3f, 95%% bootstrap CI [%.3f, %.3f]\n',
+            alpha_group, ci_group[1], ci_group[2]))
+cat(sprintf('alpha (participant, log)    = %.3f, 95%% bootstrap CI [%.3f, %.3f]\n',
+            alpha_indiv, ci_indiv[1], ci_indiv[2]))
+cat(sprintf('Welch log-scale test vs alpha=0: p = %.3f\n', p_vs_zero))
+cat(sprintf('Welch log-scale test vs alpha=4: p < 0.001 (exact %.1e)\n', p_vs_four))
+cat(sprintf('mu-hat (offloading factor) = %.3f\n', mu_hat))
