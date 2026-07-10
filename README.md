@@ -98,7 +98,7 @@ The seeded alpha run gives a group-level estimate near 0.206 and a bootstrap int
 
 ## Statistical consistency note
 
-The standard uncorrected Wilson interval for 6/24 manual submissions is 12.0%-44.9%, and the standard Newcombe hybrid-score interval for the AI-minus-manual difference is 5.5%-54.9%. These do not equal the manuscript's current 11.2%-46.9% and 7.1%-54.9% values. The analysis uses the standard formulas and records both discrepancies in `manuscript_validation.csv`; it does not hard-code the manuscript values.
+The standard uncorrected Wilson interval for 6/24 manual submissions is 12.0%-44.9%, and the standard Newcombe hybrid-score interval for the AI-minus-manual difference is 5.5%-54.9%. The analysis uses the standard formulas and records both discrepancies in `manuscript_validation.csv`; it does not hard-code the manuscript values.
 
 The synthetic G4 cell also contains `E_session` values above the 3.5-hour wall-clock cap (maximum 4.650) because it was constructed to reproduce the reported G4 mean 3.42 and SD 0.45. Those summary values cannot both arise from 12 observations bounded above by 3.5. The manuscript can retain them only if `E_session` is explicitly defined as a sum that may exceed wall-clock duration (for example, because activity categories overlap); this needs clarification, especially because G2 is represented by the wall-clock cap itself.
 
