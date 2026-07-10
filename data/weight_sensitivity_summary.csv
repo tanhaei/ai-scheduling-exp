@@ -1,0 +1,10 @@
+Weighting_Scheme,G1,G2,G3,G4
+Original weights,92,0,100,92
+PassRate +0.10,92,0,100,92
+Coverage +0.10,92,0,100,92
+Static score +0.10,92,0,100,92
+Security score +0.10,92,0,100,83
+PassRate -0.10,83,0,100,83
+Coverage -0.10,92,0,100,92
+Static score -0.10,92,0,100,92
+Security score -0.10,92,0,100,100

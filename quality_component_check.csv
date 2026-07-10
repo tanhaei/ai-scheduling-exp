@@ -1,0 +1,5 @@
+Group,PassRate,Coverage,Static_Score,Security_Score,Composite_From_Rounded_Component_Means,Reported_Composite_Mean,Difference
+G1,85,85,82,73,82.1500,82.2000,-0.0500
+G2,20,30,70,68,39.1000,39.2000,-0.1000
+G3,100,95,90,87,94.9000,94.9000,0.0000
+G4,86,81,85,61,79.8500,79.8000,0.0500

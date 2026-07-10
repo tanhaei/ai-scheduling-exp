@@ -7,7 +7,9 @@
 #
 # Notes on interpretation (consistent with the manuscript):
 #   - alpha is an EXPLORATORY, task-specific descriptor, not a stable
-#     parameter. Both bootstrap intervals include zero.
+#     parameter. The group-summary interval crosses zero; the participant
+#     interval's lower endpoint is only about 0.005 and is described in the
+#     manuscript as effectively zero and sensitive to resampling choices.
 #   - The group-level estimate fits Eq. (2) to the observed AI-assisted
 #     cell means (G3 nominal, G4 compressed); the participant-level
 #     estimate uses a log-scale estimator with participant resampling.
@@ -113,9 +115,9 @@ alpha_indiv <- (mean(log(g4_effort)) - mean(log(g3_effort))) / log_ratio
 set.seed(42)
 bootstrap_reps <- 100000
 
-# (a) Group-summary bootstrap: resample cell means under the observed
-#     means and standard errors (normal approximation). This is the
-#     distribution shown in Figure 4.
+# (a) Parametric group-summary bootstrap: simulate cell means under the
+#     observed means and standard errors (normal approximation). This is the
+#     distribution shown in manuscript Figure 4.
 boot_group <- replicate(bootstrap_reps, {
   s3 <- max(rnorm(1, mean(g3_effort), sd(g3_effort) / sqrt(n_cell)), 1e-6)
   s4 <- max(rnorm(1, mean(g4_effort), sd(g4_effort) / sqrt(n_cell)), 1e-6)

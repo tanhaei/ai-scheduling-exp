@@ -1,0 +1,5 @@
+Analysis,Arm_or_Contrast,Estimate,CI_Lower,CI_Upper,p
+Flagged_Submission_Proportion,Manual,0.25,0.1199936623,0.4489944401,
+Flagged_Submission_Proportion,AI-assisted,0.5833333333,0.3883466587,0.7553239739,
+Flagged_Proportion_Difference,AI-assisted minus Manual,0.3333333333,0.05473220183,0.5489311726,0.03921025999
+Triaged_True_Positive_Fisher_Test,AI-assisted versus Manual,5.5,,,0.07226467309

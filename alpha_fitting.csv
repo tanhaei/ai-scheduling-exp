@@ -1,3 +1,3 @@
 Metric,Point_Estimate,CI_Lower,CI_Upper,Bootstrap_Replicates,Basis
-AI_Time_Sensitivity_Exponent_GroupBootstrap,0.206,-0.029,0.453,100000,"Cell means/SDs for G3 and G4 (group-level bootstrap, ratio-of-means estimator)"
-AI_Time_Sensitivity_Exponent_IndividualBootstrap,0.228,0.005,0.494,100000,"Participant-level G3/G4 session effort (log-scale estimator, participant resampling)"
+AI_Time_Sensitivity_Exponent_GroupBootstrap,0.206,-0.029,0.453,100000,Parametric cell-mean bootstrap for G3 and G4; ratio-of-means estimator
+AI_Time_Sensitivity_Exponent_IndividualBootstrap,0.228,0.005,0.494,100000,Participant-level G3/G4 effort; log-scale estimator with within-cell resampling

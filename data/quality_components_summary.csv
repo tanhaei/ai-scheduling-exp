@@ -1,0 +1,5 @@
+Group,PassRate,Coverage,Static_Score,Security_Score
+G1,85,85,82,73
+G2,20,30,70,68
+G3,100,95,90,87
+G4,86,81,85,61

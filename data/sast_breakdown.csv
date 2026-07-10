@@ -1,0 +1,7 @@
+Tool,Rule_Category,Manual,AI_Assisted
+Bandit,SQL injection pattern,1,4
+Bandit,Unsafe deserialization,0,3
+Semgrep,Injection-related rule,2,5
+Semgrep,Deserialization-related rule,0,2
+SonarQube,Security hotspot,2,4
+Other,Other high-severity rule,1,1
