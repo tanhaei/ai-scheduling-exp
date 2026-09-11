@@ -1,38 +1,38 @@
-# Alignment changes for manuscript V2(9)
+# Alignment changes for manuscript V3 (2026-09-11)
 
-## Reproducibility coverage
+This revision updates the repository to match the final analyses and figures in `V3(20260911-075333).pdf`.
 
-- Added `scripts/analysis.py` as a deterministic, tested analysis pipeline.
-- Added two-way 2 x 2 ANOVA, partial eta-squared, alpha estimation, both bootstrap analyses, Welch tests against alpha=0 and alpha=4, the descriptive offloading factor, Wilson intervals, the Newcombe difference interval, and Fisher exact tests.
-- Added `manuscript_validation.csv` generation so each manuscript claim is marked as reproduced, approximate, aggregate-only, not reproducible, or inconsistent.
-- Added standard-library unit tests for the design, success rule, Tables 4-8 inputs, alpha estimates, ANOVA, and security statistics.
+## Removed obsolete analyses and assets
 
-## Data integrity
+- Removed the participant-level reconstructed `dataset_48.csv` from the active reproducibility pipeline.
+- Removed the effort ANOVA, effort summaries, schedule-sensitivity exponent (`alpha`), offloading factor (`mu`), bootstrap analyses, and their output files.
+- Removed the old theoretical Putnam/AI curve and effort/sensitivity figures.
+- Removed the obsolete R analysis mirror because the current manuscript's Appendix C specifies the Python analysis environment and the R script implemented analyses that are no longer in the paper.
 
-- Corrected the README's contradictory description of `dataset_48.csv` as both raw and synthetic. It is now clearly documented as a synthetic participant-level reconstruction.
-- Kept aggregate-only values in separate files instead of fabricating participant-level covariates or questionnaire responses.
-- Added aggregate files for participant balance, quality components, weight sensitivity, security counts, SAST categories, and questionnaire means.
-- The Section 5.3 mixed-effects model is explicitly marked not independently reproducible because the public dataset does not include `PriorAI` or `Stratum`.
+## Added/updated current analyses
 
-## Figure generation
+- Rebuilt the quality analysis from the final Table 4 means, SDs, n=12 per cell, and success counts.
+- Added the summary-based quality ANOVA exactly as described in Appendix C.2, including residual SSE = 2190.65.
+- Added the G4-vs-G2 Fisher exact test and Newcombe risk-difference interval.
+- Added the probability-ordered Fisher-Freeman-Halton exact test across all four success cells.
+- Added the minimum detectable interaction effect calculation (`f = 0.4135`, partial eta-squared `= 0.1460`).
+- Updated Table 6 component means/SDs and t-interval calculations.
+- Replaced the old weight-sensitivity percentages with the final Table 7 success counts.
+- Added the final Table 8 threshold-sensitivity counts.
+- Replaced pooled-only security input with the final four-cell counts `(3, 3, 7, 7)` and added the exact conditional Tool x Schedule interaction calculation from Appendix C.4.
+- Preserved the pooled security comparison (14/24 vs. 6/24), standard Wilson/Newcombe intervals, and descriptive triage Fisher calculation.
+- Added reported SAST executable versions and explicit notes that the rulesets/configuration artifacts are unavailable.
 
-- Added strict dataset validation and deterministic group ordering to `scripts/data.py`.
-- Corrected the figure-number documentation: `Fig3_Theoretical_Curve.pdf` is manuscript Figure 1, `Fig1_Effort_Analysis.pdf` is manuscript Figure 2, and `Fig2_Quality_Distribution.pdf` is manuscript Figure 3.
-- Clarified that the theoretical alpha=2.0 curve and shaded band are conceptual rather than fitted estimates or confidence bounds.
-- Updated the compressed-time legend to show the exact 3.5-hour condition and its approximate 0.6-times-nominal interpretation.
+## Figures
 
-## Alpha wording
+The plotting pipeline now generates the three figures present in the manuscript:
 
-- Corrected the R-script comment that previously claimed both bootstrap intervals include zero. The group-summary interval crosses zero; the participant-level lower endpoint is approximately 0.005 and is only effectively zero at the manuscript's displayed precision.
-- Documented the exact seeded group interval (approximately `[-0.029, 0.453]`) alongside the manuscript's approximate `[-0.03, 0.46]` wording.
+1. `Fig1_Within_Window_Success.pdf`
+2. `Fig2_Composite_Quality.pdf`
+3. `Fig3_Threshold_Sensitivity.pdf`
 
-## Manuscript-side statistical findings
+All figure values are read directly from the final manuscript summary files.
 
-The standard formulas reproduce the AI-assisted Wilson interval and the triage Fisher test, but two current manuscript values do not reproduce:
+## Tests
 
-- For 6/24 manual flagged submissions, the standard uncorrected 95% Wilson interval is **12.0%-44.9%**, not **11.2%-46.9%**.
-- For the difference 14/24 minus 6/24, the standard Newcombe hybrid-score 95% interval is **5.5%-54.9%**, not **7.1%-54.9%**.
-
-The code reports the reproducible values and flags the differences rather than hard-coding the manuscript numbers.
-
-One construct-level clarification is also still required: the synthetic G4 cell has a maximum `E_session` of 4.650 hours even though the condition has a 3.5-hour hard cap. The reported G4 mean (3.42) and SD (0.45) cannot both be generated by 12 wall-clock observations bounded at 3.5. The manuscript must explicitly explain why the composite effort proxy can exceed elapsed session time, or the reported summary must be revisited.
+The unit tests now check the exact final manuscript values for Tables 4-11 where arithmetic reproduction is possible, the exact omnibus/interaction tests, power calculation, supporting summaries, and successful figure generation. Any manuscript mismatch causes the main analysis pipeline to exit with an error.

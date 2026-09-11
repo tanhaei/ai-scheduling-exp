@@ -1,130 +1,138 @@
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import analysis  # noqa: E402
+import data as plotting  # noqa: E402
 
 
 class ReproducibilityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.data = analysis.load_participant_data()
-        cls.group_summary = analysis.build_group_summary(cls.data).set_index("Group")
+        cls.quality = analysis.load_quality_summary()
 
-    def test_design_and_success_rule(self) -> None:
-        self.assertEqual(len(self.data), 48)
-        self.assertEqual(
-            self.data["Group"].value_counts().reindex(analysis.GROUPS).tolist(),
-            [12, 12, 12, 12],
-        )
-        expected = (self.data["Quality_Score"] >= 75).astype(int)
-        np.testing.assert_array_equal(self.data["Success"].astype(int), expected)
+    def test_final_2x2_inputs(self) -> None:
+        self.assertEqual(self.quality["Group"].tolist(), ["G1", "G2", "G3", "G4"])
+        self.assertEqual(self.quality["N"].tolist(), [12, 12, 12, 12])
+        np.testing.assert_allclose(self.quality["Q_Mean"], [82.2, 39.2, 94.9, 79.8])
+        np.testing.assert_allclose(self.quality["Q_SD"], [4.9, 12.1, 3.2, 4.3])
+        self.assertEqual(self.quality["Success_Q75"].tolist(), [11, 0, 12, 11])
 
-    def test_table_4_group_summaries(self) -> None:
-        expected = {
-            "G1": (5.93, 0.27, 82.2, 4.9, 92),
-            "G2": (3.50, 0.00, 39.2, 12.1, 0),
-            "G3": (3.06, 0.57, 94.9, 3.2, 100),
-            "G4": (3.42, 0.45, 79.8, 4.3, 92),
+    def test_table_4_quality_intervals_and_success_wilson(self) -> None:
+        table = analysis.quality_summary_with_intervals().set_index("Group")
+        expected_q_ci = {
+            "G1": (79.1, 85.3),
+            "G2": (31.5, 46.9),
+            "G3": (92.9, 96.9),
+            "G4": (77.1, 82.5),
         }
-        for group, target in expected.items():
-            row = self.group_summary.loc[group]
-            actual = (
-                round(row["Effort_Mean"], 2),
-                round(row["Effort_SD"], 2),
-                round(row["Quality_Mean"], 1),
-                round(row["Quality_SD"], 1),
-                round(row["Success_Rate"]),
+        expected_wilson = {
+            "G1": (64.6, 98.5),
+            "G2": (0.0, 24.2),
+            "G3": (75.8, 100.0),
+            "G4": (64.6, 98.5),
+        }
+        for group in analysis.GROUPS:
+            row = table.loc[group]
+            self.assertEqual(
+                (round(100 * row.Success_Wilson_Lower, 1), round(100 * row.Success_Wilson_Upper, 1)),
+                expected_wilson[group],
             )
-            self.assertEqual(actual, target)
+            self.assertEqual(
+                (round(row.Q_CI_Lower, 1), round(row.Q_CI_Upper, 1)),
+                expected_q_ci[group],
+            )
 
-    def test_tables_5_and_6_anova(self) -> None:
-        effort = analysis.two_way_anova(self.data, "Effort_Hours").set_index("Term")
-        quality = analysis.two_way_anova(self.data, "Quality_Score").set_index("Term")
+    def test_table_5_summary_anova(self) -> None:
+        table = analysis.summary_based_quality_anova().set_index("Term")
+        self.assertAlmostEqual(table.loc["Tool", "SS"], 8522.67, 8)
+        self.assertAlmostEqual(table.loc["Schedule", "SS"], 10126.83, 8)
+        self.assertAlmostEqual(table.loc["Tool x Schedule", "SS"], 2335.23, 8)
+        self.assertAlmostEqual(table.loc["Residual", "SS"], 2190.65, 8)
+        self.assertAlmostEqual(table.loc["Residual", "MS"], 49.7875, 8)
+        self.assertAlmostEqual(table.loc["Tool x Schedule", "F"], 46.90394175, 7)
+        self.assertAlmostEqual(table.loc["Tool x Schedule", "p"], 1.90594122e-8, places=15)
+        self.assertAlmostEqual(table.loc["Tool x Schedule", "Partial_Eta_Squared"], 0.51597258, 7)
 
-        effort_expected = {
-            "Tool Support": 26.1,
-            "Schedule Condition": 12.9,
-            "Tool x Schedule": 23.4,
-            "Residual": 6.60,
-        }
-        quality_expected = {
-            "Tool Support": 8523,
-            "Schedule Condition": 10127,
-            "Tool x Schedule": 2335,
-            "Residual": 2191,
-        }
-        for term, target in effort_expected.items():
-            self.assertEqual(round(effort.loc[term, "SS"], 1), target)
-        for term, target in quality_expected.items():
-            self.assertEqual(round(quality.loc[term, "SS"]), target)
+    def test_success_exact_statistics(self) -> None:
+        table = analysis.success_analysis().set_index(["Analysis", "Contrast"])
+        contrast = table.loc[("Compressed-condition risk difference", "G4 minus G2")]
+        omnibus = table.loc[("Fisher-Freeman-Halton omnibus", "G1-G4 heterogeneity")]
+        self.assertAlmostEqual(contrast.Estimate, 11 / 12)
+        self.assertAlmostEqual(contrast.CI_Lower, 0.5533502838, 9)
+        self.assertAlmostEqual(contrast.CI_Upper, 0.9851349056, 9)
+        self.assertAlmostEqual(contrast.p, 9.6148299137e-6, places=14)
+        self.assertAlmostEqual(omnibus.p, 5.2247403046e-9, places=17)
 
-        self.assertAlmostEqual(effort.loc["Tool Support", "Partial_Eta_Squared"], 0.80, 2)
-        self.assertAlmostEqual(quality.loc["Tool x Schedule", "Partial_Eta_Squared"], 0.52, 2)
+    def test_minimum_detectable_interaction_effect(self) -> None:
+        row = analysis.minimum_detectable_interaction_effect().iloc[0]
+        self.assertAlmostEqual(row.Minimum_Detectable_f, 0.4135, 4)
+        self.assertAlmostEqual(row.Equivalent_Partial_Eta_Squared, 0.1460, 4)
 
-    def test_alpha_and_offloading_estimates(self) -> None:
-        alpha_table, parameters, _ = analysis.alpha_analysis(
-            self.data, bootstrap_reps=20_000, seed=42
-        )
-        group = alpha_table.iloc[0]
-        individual = alpha_table.iloc[1]
-        values = parameters.set_index("Metric")["Estimate"]
+    def test_table_6_component_summaries(self) -> None:
+        table = analysis.component_summary_with_intervals().set_index("Group")
+        self.assertEqual((table.loc["G1", "PassRate_Mean"], table.loc["G1", "PassRate_SD"]), (85.05, 7.33))
+        self.assertEqual((round(table.loc["G1", "PassRate_Reported_CI_Lower"], 2), round(table.loc["G1", "PassRate_Reported_CI_Upper"], 2)), (80.40, 89.70))
+        self.assertEqual((table.loc["G3", "PassRate_Mean"], table.loc["G3", "PassRate_SD"]), (100.0, 0.0))
+        self.assertEqual((table.loc["G3", "PassRate_Reported_CI_Lower"], table.loc["G3", "PassRate_Reported_CI_Upper"]), (100.0, 100.0))
+        self.assertEqual(round(table.loc["G3", "Coverage_Reported_CI_Upper"], 2), 100.48)
+        self.assertEqual((round(table.loc["G4", "Security_Score_Reported_CI_Lower"], 2), round(table.loc["G4", "Security_Score_Reported_CI_Upper"], 2)), (53.38, 68.52))
+        self.assertLessEqual(table.filter(like="CI_Max_Abs_Difference").to_numpy().max(), 0.011)
 
-        self.assertAlmostEqual(group["Point_Estimate"], 0.206, 3)
-        self.assertLess(group["CI_Lower"], 0)
-        self.assertGreater(group["CI_Upper"], 0.40)
-        self.assertAlmostEqual(individual["Point_Estimate"], 0.228, 3)
-        self.assertLess(individual["CI_Lower"], 0.02)
-        self.assertAlmostEqual(values["Welch_P_Alpha_Equals_0"], 0.10, 2)
-        self.assertLess(values["Welch_P_Alpha_Equals_4"], 0.001)
-        self.assertAlmostEqual(values["Mu_Offloading_Factor"], 0.48, 2)
+    def test_table_7_weight_sensitivity(self) -> None:
+        table = analysis.load_weight_sensitivity().set_index("Weighting_Scheme")
+        self.assertEqual(table.loc["Original weights", analysis.GROUPS].astype(int).tolist(), [11, 0, 12, 11])
+        self.assertEqual(table.loc["Coverage +0.10", analysis.GROUPS].astype(int).tolist(), [12, 0, 12, 10])
+        self.assertEqual(table.loc["Security score +0.10", analysis.GROUPS].astype(int).tolist(), [10, 0, 12, 6])
+        self.assertEqual(table.loc["Static score -0.10", analysis.GROUPS].astype(int).tolist(), [11, 0, 12, 9])
 
-    def test_quality_components_match_composite_with_rounding(self) -> None:
-        checked = analysis.quality_component_check(self.group_summary.reset_index())
-        self.assertLessEqual(checked["Difference"].abs().max(), 0.1000001)
-        rounded_components = checked[
-            ["PassRate", "Coverage", "Static_Score", "Security_Score"]
-        ].to_numpy()
-        expected = np.array(
-            [[85, 85, 82, 73], [20, 30, 70, 68], [100, 95, 90, 87], [86, 81, 85, 61]]
-        )
-        np.testing.assert_array_equal(rounded_components, expected)
+    def test_table_8_threshold_sensitivity(self) -> None:
+        table = analysis.load_threshold_sensitivity().set_index("Threshold")
+        self.assertEqual(table.loc[70, analysis.GROUPS].astype(int).tolist(), [12, 0, 12, 12])
+        self.assertEqual(table.loc[75, analysis.GROUPS].astype(int).tolist(), [11, 0, 12, 11])
+        self.assertEqual(table.loc[80, analysis.GROUPS].astype(int).tolist(), [8, 0, 12, 5])
 
-    def test_weight_sensitivity_table(self) -> None:
-        sensitivity = analysis.load_weight_sensitivity().set_index("Weighting_Scheme")
-        self.assertEqual(sensitivity.loc["Original weights", "G4"], 92)
-        self.assertEqual(sensitivity.loc["Security score +0.10", "G4"], 83)
-        self.assertEqual(sensitivity.loc["PassRate -0.10", "G1"], 83)
-        self.assertEqual(sensitivity.loc["Security score -0.10", "G4"], 100)
+    def test_security_statistics(self) -> None:
+        table = analysis.security_analysis().set_index(["Analysis", "Contrast"])
+        ai = table.loc[("Pooled flagged proportion", "AI-assisted")]
+        manual = table.loc[("Pooled flagged proportion", "Manual")]
+        difference = table.loc[("Pooled flagged risk difference", "AI-assisted minus Manual")]
+        interaction = table.loc[("Exact Tool x Schedule interaction", "G1-G4 conditional test")]
+        triage = table.loc[("Descriptive triage Fisher test", "8/24 AI-assisted vs 2/24 Manual")]
 
-    def test_security_counts_and_standard_intervals(self) -> None:
-        security = analysis.security_analysis().set_index(["Analysis", "Arm_or_Contrast"])
-        ai = security.loc[("Flagged_Submission_Proportion", "AI-assisted")]
-        manual = security.loc[("Flagged_Submission_Proportion", "Manual")]
-        difference = security.loc[
-            ("Flagged_Proportion_Difference", "AI-assisted minus Manual")
+        self.assertAlmostEqual(ai.Estimate, 14 / 24)
+        self.assertEqual((round(100 * ai.CI_Lower, 1), round(100 * ai.CI_Upper, 1)), (38.8, 75.5))
+        self.assertAlmostEqual(manual.Estimate, 6 / 24)
+        self.assertEqual((round(100 * manual.CI_Lower, 1), round(100 * manual.CI_Upper, 1)), (12.0, 44.9))
+        self.assertEqual((round(100 * difference.CI_Lower, 1), round(100 * difference.CI_Upper, 1)), (5.5, 54.9))
+        self.assertAlmostEqual(difference.p, 0.03921025999, 10)
+        self.assertEqual(interaction.p, 1.0)
+        self.assertAlmostEqual(triage.p, 0.07226467309, 10)
+
+    def test_supporting_tables(self) -> None:
+        analysis.validate_supporting_tables()  # raises on any mismatch
+
+    def test_validation_has_no_mismatch(self) -> None:
+        validation = analysis.manuscript_validation()
+        self.assertFalse((validation["Status"] == "MISMATCH").any())
+
+    def test_figure_generation(self) -> None:
+        paths = [
+            plotting.plot_within_window_success(),
+            plotting.plot_composite_quality(),
+            plotting.plot_threshold_sensitivity(),
         ]
-        triage = security.loc[
-            ("Triaged_True_Positive_Fisher_Test", "AI-assisted versus Manual")
-        ]
-
-        self.assertAlmostEqual(ai["Estimate"], 14 / 24)
-        self.assertAlmostEqual(manual["Estimate"], 6 / 24)
-        self.assertAlmostEqual(ai["CI_Lower"], 0.3883467, 6)
-        self.assertAlmostEqual(ai["CI_Upper"], 0.7553240, 6)
-        self.assertAlmostEqual(manual["CI_Lower"], 0.1199937, 6)
-        self.assertAlmostEqual(manual["CI_Upper"], 0.4489944, 6)
-        self.assertAlmostEqual(difference["CI_Lower"], 0.0547322, 6)
-        self.assertAlmostEqual(difference["CI_Upper"], 0.5489312, 6)
-        self.assertAlmostEqual(triage["p"], 0.0722647, 6)
+        for path in paths:
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 1000)
 
 
 if __name__ == "__main__":

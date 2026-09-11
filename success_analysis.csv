@@ -1,0 +1,7 @@
+Analysis,Contrast,Estimate,CI_Lower,CI_Upper,p
+Cell success proportion,G1,0.9166666667,0.6461200889,0.9851349056,
+Cell success proportion,G2,0,2.775557562e-17,0.2424940067,
+Cell success proportion,G3,1,0.7575059933,1,
+Cell success proportion,G4,0.9166666667,0.6461200889,0.9851349056,
+Compressed-condition risk difference,G4 minus G2,0.9166666667,0.5533502838,0.9851349056,9.614829914e-06
+Fisher-Freeman-Halton omnibus,G1-G4 heterogeneity,,,,5.224740305e-09

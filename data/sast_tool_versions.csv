@@ -1,0 +1,4 @@
+Tool,Version,Reproducibility_Note
+Semgrep,1.168.0,"Ruleset/configuration and scan command are not included in the available revision materials"
+SonarQube,"26.5 Community Build","Quality profile/analyzer versions and hotspot severity mapping are not included"
+Bandit,1.9.4,"Configuration and scan command are not included"

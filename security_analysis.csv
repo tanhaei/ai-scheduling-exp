@@ -1,5 +1,10 @@
-Analysis,Arm_or_Contrast,Estimate,CI_Lower,CI_Upper,p
-Flagged_Submission_Proportion,Manual,0.25,0.1199936623,0.4489944401,
-Flagged_Submission_Proportion,AI-assisted,0.5833333333,0.3883466587,0.7553239739,
-Flagged_Proportion_Difference,AI-assisted minus Manual,0.3333333333,0.05473220183,0.5489311726,0.03921025999
-Triaged_True_Positive_Fisher_Test,AI-assisted versus Manual,5.5,,,0.07226467309
+Analysis,Contrast,Estimate,CI_Lower,CI_Upper,p
+Cell flagged proportion,G1,0.25,0.08894166839,0.5323053349,
+Cell flagged proportion,G2,0.25,0.08894166839,0.5323053349,
+Cell flagged proportion,G3,0.5833333333,0.3195113125,0.8067396863,
+Cell flagged proportion,G4,0.5833333333,0.3195113125,0.8067396863,
+Pooled flagged proportion,Manual,0.25,0.1199936623,0.4489944401,
+Pooled flagged proportion,AI-assisted,0.5833333333,0.3883466587,0.7553239739,
+Pooled flagged risk difference,AI-assisted minus Manual,0.3333333333,0.05473220183,0.5489311726,0.03921025999
+Exact Tool x Schedule interaction,G1-G4 conditional test,,,,1
+Descriptive triage Fisher test,8/24 AI-assisted vs 2/24 Manual,,,,0.07226467309

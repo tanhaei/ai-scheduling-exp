@@ -1,31 +1,37 @@
-"""Reproduce the manuscript's quantitative analyses from the public data.
+"""Reproduce the numerical checks reported in manuscript V3 (2026-09-11).
 
-The participant-level CSV in this repository is a synthetic reconstruction of
-the reported effort and composite-quality summaries.  Aggregate-only outcomes
-(quality components, weight sensitivity, and security counts) are kept in
-separate files so that they are not misrepresented as raw participant data.
+This pipeline intentionally uses only the final aggregate inputs reported in the
+manuscript: quality means/SDs and success counts, component summaries,
+weight/threshold sensitivity counts, and four-cell security counts. It does
+not reconstruct participant-level observations and it does not perform the
+removed effort, schedule-exponent, or offloading-factor analyses.
 """
 
 from __future__ import annotations
 
-import argparse
-import os
-import tempfile
+import itertools
+import math
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import brentq
 from scipy.stats import f as f_distribution
-from scipy.stats import fisher_exact, norm, t as t_distribution
-
+from scipy.stats import fisher_exact, ncf, norm, t as t_distribution
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
-PARTICIPANT_DATA = DATA_DIR / "dataset_48.csv"
-QUALITY_COMPONENT_DATA = DATA_DIR / "quality_components_summary.csv"
-WEIGHT_SENSITIVITY_DATA = DATA_DIR / "weight_sensitivity_summary.csv"
-SECURITY_DATA = DATA_DIR / "security_summary.csv"
+
+QUALITY_SUMMARY = DATA_DIR / "quality_summary.csv"
+QUALITY_COMPONENTS = DATA_DIR / "quality_components_summary.csv"
+WEIGHT_SENSITIVITY = DATA_DIR / "weight_sensitivity_summary.csv"
+THRESHOLD_SENSITIVITY = DATA_DIR / "threshold_sensitivity_summary.csv"
+SECURITY_SUMMARY = DATA_DIR / "security_summary.csv"
+SAST_BREAKDOWN = DATA_DIR / "sast_breakdown.csv"
+SAST_TRIAGE = DATA_DIR / "sast_triage_summary.csv"
+PARTICIPANT_BALANCE = DATA_DIR / "participant_balance_summary.csv"
+QUESTIONNAIRE = DATA_DIR / "questionnaire_summary.csv"
 
 GROUPS = ["G1", "G2", "G3", "G4"]
 QUALITY_WEIGHTS = {
@@ -42,136 +48,129 @@ def require_columns(df: pd.DataFrame, required: Iterable[str], source: str) -> N
         raise ValueError(f"{source} is missing required columns: {missing}")
 
 
-def load_participant_data(path: Path = PARTICIPANT_DATA) -> pd.DataFrame:
+def _read(path: Path) -> pd.DataFrame:
     if not path.exists():
-        raise FileNotFoundError(f"Participant dataset not found: {path}")
+        raise FileNotFoundError(path)
+    return pd.read_csv(path)
 
-    df = pd.read_csv(path)
-    require_columns(
-        df,
-        ["Group", "Effort_Hours", "Quality_Score", "Success"],
-        path.name,
-    )
 
-    unexpected_groups = sorted(set(df["Group"]) - set(GROUPS))
-    if unexpected_groups:
-        raise ValueError(f"Unexpected experimental groups: {unexpected_groups}")
-
-    counts = df["Group"].value_counts().reindex(GROUPS, fill_value=0)
-    if len(df) != 48 or not (counts == 12).all():
-        raise ValueError(
-            "The manuscript design requires 48 rows and 12 participants per cell; "
-            f"observed counts are {counts.to_dict()}"
-        )
-
-    numeric_columns = ["Effort_Hours", "Quality_Score", "Success"]
-    if df[numeric_columns].isna().any().any():
-        raise ValueError("Participant data contain missing numeric values")
-    if not np.isfinite(df[numeric_columns].to_numpy(dtype=float)).all():
-        raise ValueError("Participant data contain non-finite numeric values")
-    if (df["Effort_Hours"] <= 0).any():
-        raise ValueError("Effort_Hours must be positive")
-    if not df["Quality_Score"].between(0, 100).all():
-        raise ValueError("Quality_Score must be between 0 and 100")
-
-    expected_success = (df["Quality_Score"] >= 75).astype(int)
-    if not np.array_equal(df["Success"].astype(int), expected_success):
-        bad_rows = df.index[df["Success"].astype(int) != expected_success].tolist()
-        raise ValueError(
-            "Success must equal int(Quality_Score >= 75); inconsistent rows: "
-            f"{bad_rows}"
-        )
-
-    g2_effort = df.loc[df["Group"] == "G2", "Effort_Hours"].to_numpy()
-    if not np.allclose(g2_effort, 3.5, atol=1e-12):
-        raise ValueError("Every G2 effort value must equal the reported 3.5-hour cap")
-
+def load_quality_summary(path: Path = QUALITY_SUMMARY) -> pd.DataFrame:
+    df = _read(path)
+    require_columns(df, ["Group", "Tool", "Schedule", "N", "Q_Mean", "Q_SD", "Success_Q75"], path.name)
+    if df["Group"].tolist() != GROUPS:
+        raise ValueError(f"{path.name} must contain G1-G4 in manuscript order")
+    if not (df["N"] == 12).all():
+        raise ValueError("The manuscript design has n=12 in every cell")
+    if not df["Q_Mean"].between(0, 100).all() or not df["Q_SD"].ge(0).all():
+        raise ValueError("Quality means/SDs are outside valid bounds")
+    if not ((df["Success_Q75"] >= 0) & (df["Success_Q75"] <= df["N"])).all():
+        raise ValueError("Success counts must be between 0 and N")
+    expected_tools = ["Manual", "Manual", "AI-assisted", "AI-assisted"]
+    expected_schedules = ["Nominal", "Compressed", "Nominal", "Compressed"]
+    if df["Tool"].tolist() != expected_tools or df["Schedule"].tolist() != expected_schedules:
+        raise ValueError("Tool/Schedule labels do not match the 2x2 design")
     return df
 
 
-def mean_ci(values: pd.Series) -> tuple[float, float, float, float]:
-    array = values.to_numpy(dtype=float)
-    n = len(array)
-    mean = float(np.mean(array))
-    sd = float(np.std(array, ddof=1))
+def t_interval(mean: float, sd: float, n: int, confidence: float = 0.95) -> tuple[float, float]:
+    if n < 2 or sd < 0:
+        raise ValueError("t interval requires n >= 2 and sd >= 0")
     if sd == 0:
-        return mean, sd, mean, mean
-    half_width = float(t_distribution.ppf(0.975, n - 1) * sd / np.sqrt(n))
-    return mean, sd, mean - half_width, mean + half_width
+        return float(mean), float(mean)
+    alpha = 1 - confidence
+    critical = float(t_distribution.ppf(1 - alpha / 2, n - 1))
+    half = critical * sd / math.sqrt(n)
+    return float(mean - half), float(mean + half)
 
 
-def build_group_summary(df: pd.DataFrame) -> pd.DataFrame:
-    rows: list[dict[str, float | str]] = []
-    for group in GROUPS:
-        cell = df.loc[df["Group"] == group]
-        effort = mean_ci(cell["Effort_Hours"])
-        quality = mean_ci(cell["Quality_Score"])
+def wilson_interval(successes: int, total: int, confidence: float = 0.95) -> tuple[float, float]:
+    if total <= 0 or not 0 <= successes <= total:
+        raise ValueError("Wilson interval requires 0 <= successes <= total and total > 0")
+    alpha = 1 - confidence
+    z = float(norm.ppf(1 - alpha / 2))
+    p = successes / total
+    denominator = 1 + z**2 / total
+    center = (p + z**2 / (2 * total)) / denominator
+    half = z * math.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denominator
+    return float(max(0.0, center - half)), float(min(1.0, center + half))
+
+
+def newcombe_difference_interval(
+    successes_a: int,
+    total_a: int,
+    successes_b: int,
+    total_b: int,
+) -> tuple[float, float]:
+    """Newcombe hybrid-score interval for p_a - p_b."""
+    p_a = successes_a / total_a
+    p_b = successes_b / total_b
+    difference = p_a - p_b
+    lower_a, upper_a = wilson_interval(successes_a, total_a)
+    lower_b, upper_b = wilson_interval(successes_b, total_b)
+    lower = difference - math.sqrt((p_a - lower_a) ** 2 + (upper_b - p_b) ** 2)
+    upper = difference + math.sqrt((upper_a - p_a) ** 2 + (p_b - lower_b) ** 2)
+    return float(lower), float(upper)
+
+
+def quality_summary_with_intervals(df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_quality_summary() if df is None else df.copy()
+    rows: list[dict[str, object]] = []
+    for row in df.itertuples(index=False):
+        q_low, q_high = t_interval(float(row.Q_Mean), float(row.Q_SD), int(row.N))
+        s_low, s_high = wilson_interval(int(row.Success_Q75), int(row.N))
         rows.append(
             {
-                "Group": group,
-                "Effort_Mean": effort[0],
-                "Effort_SD": effort[1],
-                "Effort_CI_Lower": effort[2],
-                "Effort_CI_Upper": effort[3],
-                "Quality_Mean": quality[0],
-                "Quality_SD": quality[1],
-                "Quality_CI_Lower": quality[2],
-                "Quality_CI_Upper": quality[3],
-                "Success_Rate": 100 * float((cell["Quality_Score"] >= 75).mean()),
+                "Group": row.Group,
+                "Tool": row.Tool,
+                "Schedule": row.Schedule,
+                "N": int(row.N),
+                "Q_Mean": float(row.Q_Mean),
+                "Q_SD": float(row.Q_SD),
+                "Q_CI_Lower": q_low,
+                "Q_CI_Upper": q_high,
+                "Success_Q75": int(row.Success_Q75),
+                "Success_Percent": 100 * int(row.Success_Q75) / int(row.N),
+                "Success_Wilson_Lower": s_low,
+                "Success_Wilson_Upper": s_high,
             }
         )
     return pd.DataFrame(rows)
 
 
-def two_way_anova(df: pd.DataFrame, outcome: str) -> pd.DataFrame:
-    """Compute the balanced 2x2 fixed-effects ANOVA used in Tables 5 and 6."""
+def summary_based_quality_anova(df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Balanced 2x2 fixed-effects ANOVA reconstructed from cell means and SDs."""
+    df = load_quality_summary() if df is None else df.copy()
+    if not (df["N"] == df["N"].iloc[0]).all():
+        raise ValueError("Closed-form ANOVA requires equal cell sizes")
+    n = int(df["N"].iloc[0])
+    means = df.set_index("Group")["Q_Mean"].reindex(GROUPS).to_numpy(dtype=float)
+    sds = df.set_index("Group")["Q_SD"].reindex(GROUPS).to_numpy(dtype=float)
 
-    work = df.copy()
-    work["Tool"] = work["Group"].isin(["G3", "G4"]).astype(int)
-    work["Schedule"] = work["Group"].isin(["G2", "G4"]).astype(int)
+    grand = float(np.mean(means))
+    tool_means = np.array([np.mean(means[:2]), np.mean(means[2:])], dtype=float)
+    schedule_means = np.array([np.mean(means[[0, 2]]), np.mean(means[[1, 3]])], dtype=float)
+    cell = means.reshape(2, 2)  # tool rows (manual, AI), schedule cols (nominal, compressed)
 
-    cell_counts = work.groupby(["Tool", "Schedule"], observed=True).size()
-    if len(cell_counts) != 4 or cell_counts.nunique() != 1:
-        raise ValueError("The closed-form ANOVA requires four equally sized cells")
-
-    n_cell = int(cell_counts.iloc[0])
-    grand_mean = float(work[outcome].mean())
-    tool_means = work.groupby("Tool", observed=True)[outcome].mean()
-    schedule_means = work.groupby("Schedule", observed=True)[outcome].mean()
-    cell_means = work.groupby(["Tool", "Schedule"], observed=True)[outcome].mean()
-
-    ss_tool = 2 * n_cell * float(((tool_means - grand_mean) ** 2).sum())
-    ss_schedule = 2 * n_cell * float(((schedule_means - grand_mean) ** 2).sum())
-    ss_interaction = n_cell * sum(
-        (
-            cell_means.loc[(tool, schedule)]
-            - tool_means.loc[tool]
-            - schedule_means.loc[schedule]
-            + grand_mean
-        )
-        ** 2
-        for tool in (0, 1)
-        for schedule in (0, 1)
+    ss_tool = 2 * n * float(np.sum((tool_means - grand) ** 2))
+    ss_schedule = 2 * n * float(np.sum((schedule_means - grand) ** 2))
+    ss_interaction = n * sum(
+        (cell[t, s] - tool_means[t] - schedule_means[s] + grand) ** 2
+        for t in range(2)
+        for s in range(2)
     )
-    ss_residual = float(
-        sum(
-            ((cell[outcome] - cell[outcome].mean()) ** 2).sum()
-            for _, cell in work.groupby(["Tool", "Schedule"], observed=True)
-        )
-    )
-
-    df_residual = len(work) - 4
+    ss_residual = float((n - 1) * np.sum(sds**2))
+    df_residual = 4 * (n - 1)
     ms_residual = ss_residual / df_residual
-    rows: list[dict[str, float | int | str]] = []
-    for term, ss in (
-        ("Tool Support", ss_tool),
-        ("Schedule Condition", ss_schedule),
+
+    rows: list[dict[str, object]] = []
+    for term, ss in [
+        ("Tool", ss_tool),
+        ("Schedule", ss_schedule),
         ("Tool x Schedule", ss_interaction),
-    ):
+    ]:
         f_value = ss / ms_residual
         rows.append(
             {
-                "Outcome": outcome,
                 "Term": term,
                 "SS": ss,
                 "df": 1,
@@ -183,7 +182,6 @@ def two_way_anova(df: pd.DataFrame, outcome: str) -> pd.DataFrame:
         )
     rows.append(
         {
-            "Outcome": outcome,
             "Term": "Residual",
             "SS": ss_residual,
             "df": df_residual,
@@ -196,611 +194,442 @@ def two_way_anova(df: pd.DataFrame, outcome: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _welch_log_test(
-    nominal: np.ndarray,
-    compressed: np.ndarray,
-    alpha_null: float,
-    log_schedule_ratio: float,
-) -> float:
-    log_nominal = np.log(nominal)
-    log_compressed = np.log(compressed)
-    difference = (
-        float(np.mean(log_compressed))
-        - float(np.mean(log_nominal))
-        - alpha_null * log_schedule_ratio
-    )
-    nominal_variance = float(np.var(log_nominal, ddof=1) / len(log_nominal))
-    compressed_variance = float(np.var(log_compressed, ddof=1) / len(log_compressed))
-    standard_error = np.sqrt(nominal_variance + compressed_variance)
-    degrees_freedom = (nominal_variance + compressed_variance) ** 2 / (
-        nominal_variance**2 / (len(log_nominal) - 1)
-        + compressed_variance**2 / (len(log_compressed) - 1)
-    )
-    statistic = difference / standard_error
-    return float(2 * t_distribution.sf(abs(statistic), degrees_freedom))
+def fisher_freeman_halton_probability_ordered(successes: Iterable[int], totals: Iterable[int]) -> float:
+    """Exact two-sided Fisher-Freeman-Halton p-value for a 2 x k table.
+
+    Column margins and the total number of successes are fixed. The two-sided
+    p-value is probability ordered: sum of all table masses no larger than the
+    observed table mass.
+    """
+    successes = tuple(int(x) for x in successes)
+    totals = tuple(int(x) for x in totals)
+    if len(successes) != len(totals) or len(successes) < 2:
+        raise ValueError("successes and totals must have the same length >= 2")
+    if any(n <= 0 or y < 0 or y > n for y, n in zip(successes, totals)):
+        raise ValueError("Each success count must satisfy 0 <= y <= n")
+
+    total_successes = sum(successes)
+    denominator = math.comb(sum(totals), total_successes)
+    observed_weight = math.prod(math.comb(n, y) for y, n in zip(successes, totals))
+    observed_mass = observed_weight / denominator
+
+    probability = 0.0
+    ranges = [range(n + 1) for n in totals[:-1]]
+    for prefix in itertools.product(*ranges):
+        last = total_successes - sum(prefix)
+        if 0 <= last <= totals[-1]:
+            candidate = (*prefix, last)
+            weight = math.prod(math.comb(n, y) for y, n in zip(candidate, totals))
+            mass = weight / denominator
+            if mass <= observed_mass + 1e-15:
+                probability += mass
+    return float(min(1.0, probability))
 
 
-def alpha_analysis(
-    df: pd.DataFrame,
-    bootstrap_reps: int = 100_000,
-    seed: int = 42,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
-    if bootstrap_reps < 1_000:
-        raise ValueError("Use at least 1,000 bootstrap replicates")
+def success_analysis(df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_quality_summary() if df is None else df.copy()
+    indexed = df.set_index("Group")
+    rows: list[dict[str, object]] = []
 
-    nominal = df.loc[df["Group"] == "G3", "Effort_Hours"].to_numpy(dtype=float)
-    compressed = df.loc[df["Group"] == "G4", "Effort_Hours"].to_numpy(dtype=float)
-    manual_nominal = df.loc[df["Group"] == "G1", "Effort_Hours"].to_numpy(dtype=float)
-    if (nominal <= 0).any() or (compressed <= 0).any():
-        raise ValueError("Alpha estimation requires strictly positive effort values")
-
-    log_schedule_ratio = float(np.log(6.0 / 3.5))
-    alpha_group = float(np.log(np.mean(compressed) / np.mean(nominal)) / log_schedule_ratio)
-    alpha_individual = float(
-        (np.mean(np.log(compressed)) - np.mean(np.log(nominal))) / log_schedule_ratio
-    )
-
-    rng = np.random.default_rng(seed)
-    simulated_nominal_means = np.maximum(
-        rng.normal(
-            np.mean(nominal),
-            np.std(nominal, ddof=1) / np.sqrt(len(nominal)),
-            bootstrap_reps,
-        ),
-        1e-12,
-    )
-    simulated_compressed_means = np.maximum(
-        rng.normal(
-            np.mean(compressed),
-            np.std(compressed, ddof=1) / np.sqrt(len(compressed)),
-            bootstrap_reps,
-        ),
-        1e-12,
-    )
-    group_bootstrap = (
-        np.log(simulated_compressed_means / simulated_nominal_means)
-        / log_schedule_ratio
-    )
-    group_ci = np.quantile(group_bootstrap, [0.025, 0.975])
-
-    nominal_indices = rng.integers(0, len(nominal), size=(bootstrap_reps, len(nominal)))
-    compressed_indices = rng.integers(
-        0, len(compressed), size=(bootstrap_reps, len(compressed))
-    )
-    individual_bootstrap = (
-        np.mean(np.log(compressed[compressed_indices]), axis=1)
-        - np.mean(np.log(nominal[nominal_indices]), axis=1)
-    ) / log_schedule_ratio
-    individual_ci = np.quantile(individual_bootstrap, [0.025, 0.975])
-
-    alpha_table = pd.DataFrame(
-        [
-            {
-                "Metric": "AI_Time_Sensitivity_Exponent_GroupBootstrap",
-                "Point_Estimate": alpha_group,
-                "CI_Lower": float(group_ci[0]),
-                "CI_Upper": float(group_ci[1]),
-                "Bootstrap_Replicates": bootstrap_reps,
-                "Basis": (
-                    "Parametric cell-mean bootstrap for G3 and G4; "
-                    "ratio-of-means estimator"
-                ),
-            },
-            {
-                "Metric": "AI_Time_Sensitivity_Exponent_IndividualBootstrap",
-                "Point_Estimate": alpha_individual,
-                "CI_Lower": float(individual_ci[0]),
-                "CI_Upper": float(individual_ci[1]),
-                "Bootstrap_Replicates": bootstrap_reps,
-                "Basis": (
-                    "Participant-level G3/G4 effort; log-scale estimator with "
-                    "within-cell resampling"
-                ),
-            },
-        ]
-    )
-
-    parameter_table = pd.DataFrame(
-        [
-            {"Metric": "Alpha_Group", "Estimate": alpha_group},
-            {"Metric": "Alpha_Individual", "Estimate": alpha_individual},
-            {
-                "Metric": "Welch_P_Alpha_Equals_0",
-                "Estimate": _welch_log_test(nominal, compressed, 0, log_schedule_ratio),
-            },
-            {
-                "Metric": "Welch_P_Alpha_Equals_4",
-                "Estimate": _welch_log_test(nominal, compressed, 4, log_schedule_ratio),
-            },
-            {
-                "Metric": "Mu_Offloading_Factor",
-                "Estimate": 1 - float(np.mean(nominal) / np.mean(manual_nominal)),
-            },
-        ]
-    )
-    return alpha_table, parameter_table, group_bootstrap
-
-
-def quality_component_check(
-    group_summary: pd.DataFrame,
-    path: Path = QUALITY_COMPONENT_DATA,
-) -> pd.DataFrame:
-    components = pd.read_csv(path)
-    require_columns(components, ["Group", *QUALITY_WEIGHTS], path.name)
-    if components["Group"].tolist() != GROUPS:
-        raise ValueError(f"{path.name} must contain G1-G4 in manuscript order")
-
-    for component in QUALITY_WEIGHTS:
-        if not components[component].between(0, 100).all():
-            raise ValueError(f"{component} must be between 0 and 100")
-
-    components["Composite_From_Rounded_Component_Means"] = sum(
-        components[component] * weight
-        for component, weight in QUALITY_WEIGHTS.items()
-    )
-    quality_means = group_summary.set_index("Group")["Quality_Mean"]
-    components["Reported_Composite_Mean"] = components["Group"].map(quality_means)
-    components["Difference"] = (
-        components["Composite_From_Rounded_Component_Means"]
-        - components["Reported_Composite_Mean"]
-    )
-    return components
-
-
-def load_weight_sensitivity(path: Path = WEIGHT_SENSITIVITY_DATA) -> pd.DataFrame:
-    table = pd.read_csv(path)
-    require_columns(table, ["Weighting_Scheme", *GROUPS], path.name)
-    if not table[GROUPS].apply(lambda column: column.between(0, 100)).all().all():
-        raise ValueError("Weight-sensitivity success rates must be percentages in [0, 100]")
-    return table
-
-
-def wilson_interval(successes: int, total: int) -> tuple[float, float]:
-    if total <= 0 or not 0 <= successes <= total:
-        raise ValueError("Wilson interval requires 0 <= successes <= total and total > 0")
-    z_value = float(norm.ppf(0.975))
-    proportion = successes / total
-    denominator = 1 + z_value**2 / total
-    center = (proportion + z_value**2 / (2 * total)) / denominator
-    half_width = (
-        z_value
-        * np.sqrt(
-            proportion * (1 - proportion) / total
-            + z_value**2 / (4 * total**2)
-        )
-        / denominator
-    )
-    return float(center - half_width), float(center + half_width)
-
-
-def newcombe_difference_interval(
-    successes_a: int,
-    total_a: int,
-    successes_b: int,
-    total_b: int,
-) -> tuple[float, float]:
-    """Newcombe hybrid-score interval for two independent proportions."""
-
-    proportion_a = successes_a / total_a
-    proportion_b = successes_b / total_b
-    difference = proportion_a - proportion_b
-    lower_a, upper_a = wilson_interval(successes_a, total_a)
-    lower_b, upper_b = wilson_interval(successes_b, total_b)
-    lower = difference - np.sqrt(
-        (proportion_a - lower_a) ** 2 + (upper_b - proportion_b) ** 2
-    )
-    upper = difference + np.sqrt(
-        (upper_a - proportion_a) ** 2 + (proportion_b - lower_b) ** 2
-    )
-    return float(lower), float(upper)
-
-
-def security_analysis(path: Path = SECURITY_DATA) -> pd.DataFrame:
-    security = pd.read_csv(path)
-    require_columns(
-        security,
-        [
-            "Arm",
-            "Submissions",
-            "High_Severity_Flagged_Submissions",
-            "Triaged_True_Positive_Submissions",
-            "Triaged_Flags",
-            "Triage_Likely_True_Positive",
-            "Triage_Likely_False_Positive",
-            "Triage_Indeterminate",
-        ],
-        path.name,
-    )
-    if set(security["Arm"]) != {"Manual", "AI-assisted"}:
-        raise ValueError("security_summary.csv must contain Manual and AI-assisted rows")
-
-    rows: list[dict[str, float | int | str]] = []
-    for _, arm in security.iterrows():
-        successes = int(arm["High_Severity_Flagged_Submissions"])
-        total = int(arm["Submissions"])
-        lower, upper = wilson_interval(successes, total)
-        triage_total = int(
-            arm["Triage_Likely_True_Positive"]
-            + arm["Triage_Likely_False_Positive"]
-            + arm["Triage_Indeterminate"]
-        )
-        if triage_total != int(arm["Triaged_Flags"]):
-            raise ValueError(f"Triage categories do not sum to Triaged_Flags for {arm['Arm']}")
+    for group in GROUPS:
+        row = indexed.loc[group]
+        y, n = int(row.Success_Q75), int(row.N)
+        low, high = wilson_interval(y, n)
         rows.append(
             {
-                "Analysis": "Flagged_Submission_Proportion",
-                "Arm_or_Contrast": arm["Arm"],
-                "Estimate": successes / total,
-                "CI_Lower": lower,
-                "CI_Upper": upper,
+                "Analysis": "Cell success proportion",
+                "Contrast": group,
+                "Estimate": y / n,
+                "CI_Lower": low,
+                "CI_Upper": high,
                 "p": np.nan,
             }
         )
 
-    indexed = security.set_index("Arm")
-    ai = indexed.loc["AI-assisted"]
-    manual = indexed.loc["Manual"]
-    difference_ci = newcombe_difference_interval(
-        int(ai["High_Severity_Flagged_Submissions"]),
-        int(ai["Submissions"]),
-        int(manual["High_Severity_Flagged_Submissions"]),
-        int(manual["Submissions"]),
-    )
-    flagged_table = [
-        [
-            int(ai["High_Severity_Flagged_Submissions"]),
-            int(ai["Submissions"] - ai["High_Severity_Flagged_Submissions"]),
-        ],
-        [
-            int(manual["High_Severity_Flagged_Submissions"]),
-            int(manual["Submissions"] - manual["High_Severity_Flagged_Submissions"]),
-        ],
-    ]
+    g4, g2 = indexed.loc["G4"], indexed.loc["G2"]
+    y4, n4 = int(g4.Success_Q75), int(g4.N)
+    y2, n2 = int(g2.Success_Q75), int(g2.N)
+    rd = y4 / n4 - y2 / n2
+    rd_low, rd_high = newcombe_difference_interval(y4, n4, y2, n2)
+    p_fisher = float(fisher_exact([[y4, n4 - y4], [y2, n2 - y2]], alternative="two-sided").pvalue)
     rows.append(
         {
-            "Analysis": "Flagged_Proportion_Difference",
-            "Arm_or_Contrast": "AI-assisted minus Manual",
-            "Estimate": (
-                ai["High_Severity_Flagged_Submissions"] / ai["Submissions"]
-                - manual["High_Severity_Flagged_Submissions"] / manual["Submissions"]
-            ),
-            "CI_Lower": difference_ci[0],
-            "CI_Upper": difference_ci[1],
-            "p": float(fisher_exact(flagged_table, alternative="two-sided").pvalue),
+            "Analysis": "Compressed-condition risk difference",
+            "Contrast": "G4 minus G2",
+            "Estimate": rd,
+            "CI_Lower": rd_low,
+            "CI_Upper": rd_high,
+            "p": p_fisher,
         }
     )
 
-    triage_table = [
-        [
-            int(ai["Triaged_True_Positive_Submissions"]),
-            int(ai["Submissions"] - ai["Triaged_True_Positive_Submissions"]),
-        ],
-        [
-            int(manual["Triaged_True_Positive_Submissions"]),
-            int(manual["Submissions"] - manual["Triaged_True_Positive_Submissions"]),
-        ],
-    ]
+    successes = [int(indexed.loc[g, "Success_Q75"]) for g in GROUPS]
+    totals = [int(indexed.loc[g, "N"]) for g in GROUPS]
     rows.append(
         {
-            "Analysis": "Triaged_True_Positive_Fisher_Test",
-            "Arm_or_Contrast": "AI-assisted versus Manual",
-            "Estimate": float(fisher_exact(triage_table).statistic),
+            "Analysis": "Fisher-Freeman-Halton omnibus",
+            "Contrast": "G1-G4 heterogeneity",
+            "Estimate": np.nan,
             "CI_Lower": np.nan,
             "CI_Upper": np.nan,
-            "p": float(fisher_exact(triage_table, alternative="two-sided").pvalue),
+            "p": fisher_freeman_halton_probability_ordered(successes, totals),
         }
     )
     return pd.DataFrame(rows)
 
 
-def manuscript_validation(
-    group_summary: pd.DataFrame,
-    anova: pd.DataFrame,
-    alpha: pd.DataFrame,
-    parameters: pd.DataFrame,
-    components: pd.DataFrame,
-    security: pd.DataFrame,
+def minimum_detectable_interaction_effect(
+    n_total: int = 48,
+    alpha: float = 0.05,
+    target_power: float = 0.80,
+    df1: int = 1,
+    df2: int = 44,
 ) -> pd.DataFrame:
-    """Create an auditable map from public inputs to manuscript claims."""
+    critical = float(f_distribution.ppf(1 - alpha, df1, df2))
 
-    rows: list[dict[str, str | float]] = []
+    def achieved_power(effect_f: float) -> float:
+        return float(ncf.sf(critical, df1, df2, n_total * effect_f**2))
 
-    def add(
-        item: str,
-        reported: str,
-        reproduced: str,
-        status: str,
-        note: str = "",
-    ) -> None:
+    effect_f = float(brentq(lambda value: achieved_power(value) - target_power, 1e-8, 5.0))
+    partial_eta_squared = effect_f**2 / (1 + effect_f**2)
+    return pd.DataFrame(
+        [
+            {
+                "N": n_total,
+                "alpha": alpha,
+                "power": target_power,
+                "df1": df1,
+                "df2": df2,
+                "Minimum_Detectable_f": effect_f,
+                "Equivalent_Partial_Eta_Squared": partial_eta_squared,
+            }
+        ]
+    )
+
+
+def component_summary_with_intervals(path: Path = QUALITY_COMPONENTS) -> pd.DataFrame:
+    df = _read(path)
+    components = ["PassRate", "Coverage", "Static_Score", "Security_Score"]
+    required = ["Group", "N"] + [
+        f"{c}_{suffix}"
+        for c in components
+        for suffix in ("Mean", "SD", "CI_Lower", "CI_Upper")
+    ]
+    require_columns(df, required, path.name)
+    if df["Group"].tolist() != GROUPS or not (df["N"] == 12).all():
+        raise ValueError("Component summary must contain G1-G4 with n=12")
+
+    rows: list[dict[str, object]] = []
+    for row in df.itertuples(index=False):
+        out: dict[str, object] = {"Group": row.Group, "N": int(row.N)}
+        for component in components:
+            mean = float(getattr(row, f"{component}_Mean"))
+            sd = float(getattr(row, f"{component}_SD"))
+            reported_low = float(getattr(row, f"{component}_CI_Lower"))
+            reported_high = float(getattr(row, f"{component}_CI_Upper"))
+            calc_low, calc_high = t_interval(mean, sd, int(row.N))
+            out[f"{component}_Mean"] = mean
+            out[f"{component}_SD"] = sd
+            out[f"{component}_Reported_CI_Lower"] = reported_low
+            out[f"{component}_Reported_CI_Upper"] = reported_high
+            out[f"{component}_Recomputed_CI_Lower"] = calc_low
+            out[f"{component}_Recomputed_CI_Upper"] = calc_high
+            out[f"{component}_CI_Max_Abs_Difference"] = max(abs(calc_low - reported_low), abs(calc_high - reported_high))
+        rows.append(out)
+    return pd.DataFrame(rows)
+
+
+def load_weight_sensitivity(path: Path = WEIGHT_SENSITIVITY) -> pd.DataFrame:
+    df = _read(path)
+    require_columns(df, ["Weighting_Scheme", *GROUPS], path.name)
+    if len(df) != 9 or not df[GROUPS].apply(lambda c: c.between(0, 12)).all().all():
+        raise ValueError("Weight sensitivity must have 9 rows of success counts in [0,12]")
+    return df
+
+
+def load_threshold_sensitivity(path: Path = THRESHOLD_SENSITIVITY) -> pd.DataFrame:
+    df = _read(path)
+    require_columns(df, ["Threshold", *GROUPS], path.name)
+    if df["Threshold"].tolist() != [70, 75, 80]:
+        raise ValueError("Threshold sensitivity must contain Q >= 70, 75, and 80")
+    if not df[GROUPS].apply(lambda c: c.between(0, 12)).all().all():
+        raise ValueError("Threshold sensitivity counts must be in [0,12]")
+    return df
+
+
+def security_interaction_exact_p(successes: Iterable[int], n_per_cell: int = 12) -> float:
+    """Exact conditional Tool x Schedule interaction p-value from Appendix C.4."""
+    y = tuple(int(v) for v in successes)
+    if len(y) != 4 or any(v < 0 or v > n_per_cell for v in y):
+        raise ValueError("Expected four cell counts between 0 and n_per_cell")
+    total = sum(y)
+    ai_total = y[2] + y[3]
+    compressed_total = y[1] + y[3]
+
+    compatible: list[tuple[tuple[int, int, int, int], int]] = []
+    for candidate in itertools.product(range(n_per_cell + 1), repeat=4):
+        if (
+            sum(candidate) == total
+            and candidate[2] + candidate[3] == ai_total
+            and candidate[1] + candidate[3] == compressed_total
+        ):
+            weight = math.prod(math.comb(n_per_cell, value) for value in candidate)
+            compatible.append((candidate, weight))
+
+    denominator = sum(weight for _, weight in compatible)
+    observed_weight = next(weight for candidate, weight in compatible if candidate == y)
+    return float(sum(weight for _, weight in compatible if weight <= observed_weight) / denominator)
+
+
+def security_analysis(path: Path = SECURITY_SUMMARY) -> pd.DataFrame:
+    df = _read(path)
+    require_columns(df, ["Group", "Tool", "Schedule", "N", "Flagged_Submissions"], path.name)
+    if df["Group"].tolist() != GROUPS or not (df["N"] == 12).all():
+        raise ValueError("Security summary must contain G1-G4 with n=12")
+
+    rows: list[dict[str, object]] = []
+    indexed = df.set_index("Group")
+    for group in GROUPS:
+        row = indexed.loc[group]
+        y, n = int(row.Flagged_Submissions), int(row.N)
+        low, high = wilson_interval(y, n)
         rows.append(
             {
-                "Manuscript_Item": item,
-                "Reported": reported,
-                "Reproduced": reproduced,
-                "Status": status,
-                "Note": note,
+                "Analysis": "Cell flagged proportion",
+                "Contrast": group,
+                "Estimate": y / n,
+                "CI_Lower": low,
+                "CI_Upper": high,
+                "p": np.nan,
             }
         )
 
-    expected_groups = {
-        "G1": (5.93, 0.27, 82.2, 4.9, 92),
-        "G2": (3.50, 0.00, 39.2, 12.1, 0),
-        "G3": (3.06, 0.57, 94.9, 3.2, 100),
-        "G4": (3.42, 0.45, 79.8, 4.3, 92),
-    }
-    for group, expected in expected_groups.items():
-        actual = group_summary.set_index("Group").loc[group]
-        reproduced = (
-            round(float(actual["Effort_Mean"]), 2),
-            round(float(actual["Effort_SD"]), 2),
-            round(float(actual["Quality_Mean"]), 1),
-            round(float(actual["Quality_SD"]), 1),
-            round(float(actual["Success_Rate"])),
-        )
-        add(
-            f"Table 4 {group}",
-            str(expected),
-            str(reproduced),
-            "PASS" if reproduced == expected else "MISMATCH",
+    manual_y = int(indexed.loc[["G1", "G2"], "Flagged_Submissions"].sum())
+    ai_y = int(indexed.loc[["G3", "G4"], "Flagged_Submissions"].sum())
+    manual_n = int(indexed.loc[["G1", "G2"], "N"].sum())
+    ai_n = int(indexed.loc[["G3", "G4"], "N"].sum())
+    for label, y, n in [("Manual", manual_y, manual_n), ("AI-assisted", ai_y, ai_n)]:
+        low, high = wilson_interval(y, n)
+        rows.append(
+            {
+                "Analysis": "Pooled flagged proportion",
+                "Contrast": label,
+                "Estimate": y / n,
+                "CI_Lower": low,
+                "CI_Upper": high,
+                "p": np.nan,
+            }
         )
 
-    expected_ss = {
-        ("Effort_Hours", "Tool Support"): 26.1,
-        ("Effort_Hours", "Schedule Condition"): 12.9,
-        ("Effort_Hours", "Tool x Schedule"): 23.4,
-        ("Effort_Hours", "Residual"): 6.60,
-        ("Quality_Score", "Tool Support"): 8523,
-        ("Quality_Score", "Schedule Condition"): 10127,
-        ("Quality_Score", "Tool x Schedule"): 2335,
-        ("Quality_Score", "Residual"): 2191,
-    }
-    for (outcome, term), expected in expected_ss.items():
-        value = float(
-            anova.loc[(anova["Outcome"] == outcome) & (anova["Term"] == term), "SS"].iloc[0]
-        )
-        digits = 1 if outcome == "Effort_Hours" else 0
-        add(
-            f"ANOVA {outcome}: {term}",
-            str(expected),
-            str(round(value, digits)),
-            "PASS" if round(value, digits) == expected else "MISMATCH",
-        )
-
-    max_component_difference = float(components["Difference"].abs().max())
-    add(
-        "Table 7 rounded component means",
-        "Composite differs by no more than +/-0.1",
-        f"maximum absolute difference={max_component_difference:.3f}",
-        "PASS" if max_component_difference <= 0.1000001 else "MISMATCH",
-        "Only group-level rounded component means are public.",
+    rd = ai_y / ai_n - manual_y / manual_n
+    rd_low, rd_high = newcombe_difference_interval(ai_y, ai_n, manual_y, manual_n)
+    p_pooled = float(
+        fisher_exact(
+            [[ai_y, ai_n - ai_y], [manual_y, manual_n - manual_y]],
+            alternative="two-sided",
+        ).pvalue
     )
-    add(
-        "Table 8 weight sensitivity",
-        "Nine reported group-level success-rate rows",
-        "Aggregate table present",
-        "REPORTED_ONLY",
-        "Participant-level component scores are unavailable, so this table cannot be independently recomputed.",
-    )
-    add(
-        "Section 5.3 mixed-effects models",
-        "PriorAI coefficient and random Stratum intercept",
-        "Not estimable from dataset_48.csv",
-        "NOT_REPRODUCIBLE",
-        "PriorAI and Stratum are not present; synthetic covariates were intentionally not invented.",
-    )
-    participant_data = load_participant_data()
-    g4_maximum = float(
-        participant_data.loc[participant_data["Group"] == "G4", "Effort_Hours"].max()
-    )
-    add(
-        "G4 compressed-condition effort semantics",
-        "3.5-hour hard cap",
-        f"maximum synthetic E_session={g4_maximum:.3f} hours",
-        "NEEDS_CLARIFICATION",
-        (
-            "Values above 3.5 are compatible only if E_session sums overlapping "
-            "activity categories or otherwise differs from wall-clock time. The "
-            "manuscript should state this explicitly because G2 uses the wall-clock cap."
-        ),
+    rows.append(
+        {
+            "Analysis": "Pooled flagged risk difference",
+            "Contrast": "AI-assisted minus Manual",
+            "Estimate": rd,
+            "CI_Lower": rd_low,
+            "CI_Upper": rd_high,
+            "p": p_pooled,
+        }
     )
 
-    alpha_indexed = alpha.set_index("Metric")
-    group_alpha = alpha_indexed.loc["AI_Time_Sensitivity_Exponent_GroupBootstrap"]
-    individual_alpha = alpha_indexed.loc[
-        "AI_Time_Sensitivity_Exponent_IndividualBootstrap"
-    ]
-    add(
-        "Section 5.5 group alpha",
-        "0.21, approximate 95% CI [-0.03, 0.46]",
-        (
-            f"{group_alpha['Point_Estimate']:.3f}, "
-            f"[{group_alpha['CI_Lower']:.3f}, {group_alpha['CI_Upper']:.3f}]"
-        ),
-        "PASS_APPROX",
-        "The seeded run's upper endpoint is about 0.453; the manuscript reports an approximate 0.46.",
-    )
-    add(
-        "Section 5.5 participant alpha",
-        "0.23, approximate 95% CI [0.00, 0.49]",
-        (
-            f"{individual_alpha['Point_Estimate']:.3f}, "
-            f"[{individual_alpha['CI_Lower']:.3f}, {individual_alpha['CI_Upper']:.3f}]"
-        ),
-        "PASS_APPROX",
-    )
-    parameter_indexed = parameters.set_index("Metric")["Estimate"]
-    add(
-        "Section 5.5 Welch test alpha=0",
-        "p approximately 0.10",
-        f"p={parameter_indexed['Welch_P_Alpha_Equals_0']:.3f}",
-        "PASS",
-    )
-    add(
-        "Section 5.5 Welch test alpha=4",
-        "p < 0.001",
-        f"p={parameter_indexed['Welch_P_Alpha_Equals_4']:.3e}",
-        "PASS",
-    )
-    add(
-        "Section 5.5 offloading factor",
-        "mu approximately 0.48",
-        f"mu={parameter_indexed['Mu_Offloading_Factor']:.3f}",
-        "PASS",
+    cell_counts = [int(indexed.loc[g, "Flagged_Submissions"]) for g in GROUPS]
+    rows.append(
+        {
+            "Analysis": "Exact Tool x Schedule interaction",
+            "Contrast": "G1-G4 conditional test",
+            "Estimate": np.nan,
+            "CI_Lower": np.nan,
+            "CI_Upper": np.nan,
+            "p": security_interaction_exact_p(cell_counts, n_per_cell=12),
+        }
     )
 
-    security_indexed = security.set_index(["Analysis", "Arm_or_Contrast"])
-    ai_security = security_indexed.loc[("Flagged_Submission_Proportion", "AI-assisted")]
-    manual_security = security_indexed.loc[("Flagged_Submission_Proportion", "Manual")]
-    security_difference = security_indexed.loc[
-        ("Flagged_Proportion_Difference", "AI-assisted minus Manual")
-    ]
-    triage = security_indexed.loc[
-        ("Triaged_True_Positive_Fisher_Test", "AI-assisted versus Manual")
-    ]
-    add(
-        "Section 5.7 AI-assisted Wilson CI",
-        "38.8%-75.5%",
-        f"{100 * ai_security['CI_Lower']:.1f}%-{100 * ai_security['CI_Upper']:.1f}%",
-        "PASS",
+    triage = _read(SAST_TRIAGE).set_index("Arm")
+    ai_tp = int(triage.loc["AI-assisted", "Distinct_Submissions_Likely_True_Positive"])
+    manual_tp = int(triage.loc["Manual", "Distinct_Submissions_Likely_True_Positive"])
+    p_triage = float(
+        fisher_exact([[ai_tp, 24 - ai_tp], [manual_tp, 24 - manual_tp]], alternative="two-sided").pvalue
     )
-    add(
-        "Section 5.7 manual Wilson CI",
-        "11.2%-46.9%",
-        f"{100 * manual_security['CI_Lower']:.1f}%-{100 * manual_security['CI_Upper']:.1f}%",
-        "MANUSCRIPT_MISMATCH",
-        "The standard uncorrected 95% Wilson interval for 6/24 is 12.0%-44.9%.",
-    )
-    add(
-        "Section 5.7 Newcombe difference CI",
-        "7.1%-54.9%",
-        (
-            f"{100 * security_difference['CI_Lower']:.1f}%-"
-            f"{100 * security_difference['CI_Upper']:.1f}%"
-        ),
-        "MANUSCRIPT_MISMATCH",
-        "The standard Newcombe hybrid-score interval is 5.5%-54.9%.",
-    )
-    add(
-        "Section 5.7 triage Fisher test",
-        "p=0.072",
-        f"p={triage['p']:.3f}",
-        "PASS",
-    )
-    add(
-        "Section 5.7 SAST execution",
-        "Semgrep, SonarQube, and Bandit scans",
-        "Only reported aggregate counts are available",
-        "REPORTED_ONLY",
-        "Submitted source artifacts, tool configurations, and raw SAST reports are not public.",
-    )
-    add(
-        "Participant balance and questionnaires",
-        "Reported aggregate summaries",
-        "Aggregate source files present",
-        "REPORTED_ONLY",
-        "No participant-level covariates or questionnaire responses are public.",
+    rows.append(
+        {
+            "Analysis": "Descriptive triage Fisher test",
+            "Contrast": "8/24 AI-assisted vs 2/24 Manual",
+            "Estimate": np.nan,
+            "CI_Lower": np.nan,
+            "CI_Upper": np.nan,
+            "p": p_triage,
+        }
     )
     return pd.DataFrame(rows)
 
 
-def save_alpha_figure(
-    bootstrap_values: np.ndarray,
-    alpha_table: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    os.environ.setdefault(
-        "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "ai-scheduling-matplotlib")
-    )
-    import matplotlib.pyplot as plt
+def validate_supporting_tables() -> None:
+    balance = _read(PARTICIPANT_BALANCE)
+    require_columns(balance, ["Measure", *GROUPS, "Unit"], PARTICIPANT_BALANCE.name)
+    exposure = balance.loc[balance["Measure"] == "Prior Copilot/GPT-4 exposure", GROUPS]
+    if exposure.empty or exposure.iloc[0].astype(int).tolist() != [5, 6, 5, 7]:
+        raise ValueError("Prior-AI exposure counts must be 5,6,5,7 (23/48)")
 
-    group = alpha_table.iloc[0]
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.hist(bootstrap_values, bins=40, color="#7fa8d9", edgecolor="white")
-    ax.axvline(group["Point_Estimate"], linewidth=2, linestyle="--", color="#1f4e8c")
-    ax.axvline(group["CI_Lower"], linewidth=2, linestyle=":", color="#1f4e8c")
-    ax.axvline(group["CI_Upper"], linewidth=2, linestyle=":", color="#1f4e8c")
-    ax.set_title(r"Bootstrap distribution of $\alpha$ (AI-assisted conditions)")
-    ax.set_xlabel(r"Estimated AI time-sensitivity exponent ($\alpha$)")
-    ax.set_ylabel("Bootstrap count")
-    ax.legend(
-        [
-            f"Estimate: {group['Point_Estimate']:.2f}",
-            f"95% CI: [{group['CI_Lower']:.2f}, {group['CI_Upper']:.2f}]",
-        ],
-        frameon=False,
+    questionnaire = _read(QUESTIONNAIRE)
+    require_columns(questionnaire, ["Instrument", "Metric", "Group", "Mean", "Scale_Max"], QUESTIONNAIRE.name)
+    expected_questionnaire = {
+        ("NASA-TLX", "Mental Demand", "G2"): 7.8,
+        ("NASA-TLX", "Temporal Demand", "G2"): 9.2,
+        ("NASA-TLX", "Mental Demand", "G4"): 4.5,
+        ("NASA-TLX", "Temporal Demand", "G4"): 5.1,
+        ("TAM", "Perceived speed", "AI-assisted"): 4.2,
+        ("TAM", "Design focus", "AI-assisted"): 4.5,
+        ("TAM", "Verification burden", "AI-assisted"): 2.1,
+    }
+    for key, expected in expected_questionnaire.items():
+        rows = questionnaire[
+            (questionnaire["Instrument"] == key[0])
+            & (questionnaire["Metric"] == key[1])
+            & (questionnaire["Group"] == key[2])
+        ]
+        if rows.empty or not math.isclose(float(rows.iloc[0]["Mean"]), expected, abs_tol=1e-12):
+            raise ValueError(f"Questionnaire summary mismatch for {key}")
+
+    sast = _read(SAST_BREAKDOWN)
+    require_columns(sast, ["Tool", "Rule_Category", "Manual", "AI_Assisted"], SAST_BREAKDOWN.name)
+    if int(sast["Manual"].sum()) != 6 or int(sast["AI_Assisted"].sum()) != 19:
+        raise ValueError("SAST flag-category totals must be 6 manual and 19 AI-assisted")
+
+    triage = _read(SAST_TRIAGE)
+    require_columns(
+        triage,
+        ["Arm", "Sampled_Flags", "Likely_True_Positive", "Likely_False_Positive", "Indeterminate", "Distinct_Submissions_Likely_True_Positive"],
+        SAST_TRIAGE.name,
     )
-    fig.tight_layout()
-    fig.savefig(output_path, format="pdf", bbox_inches="tight")
-    plt.close(fig)
+    for row in triage.itertuples(index=False):
+        if int(row.Likely_True_Positive + row.Likely_False_Positive + row.Indeterminate) != int(row.Sampled_Flags):
+            raise ValueError(f"Triage categories do not sum for {row.Arm}")
 
 
-def write_outputs(
-    bootstrap_reps: int = 100_000,
-    seed: int = 42,
-    make_figure: bool = True,
-) -> pd.DataFrame:
-    df = load_participant_data()
-    group_summary = build_group_summary(df)
-    anova = pd.concat(
-        [
-            two_way_anova(df, "Effort_Hours"),
-            two_way_anova(df, "Quality_Score"),
-        ],
-        ignore_index=True,
-    )
-    alpha, parameters, group_bootstrap = alpha_analysis(df, bootstrap_reps, seed)
-    components = quality_component_check(group_summary)
-    weight_sensitivity = load_weight_sensitivity()
+def manuscript_validation() -> pd.DataFrame:
+    quality = quality_summary_with_intervals()
+    anova = summary_based_quality_anova()
+    success = success_analysis()
+    components = component_summary_with_intervals()
+    weight = load_weight_sensitivity().set_index("Weighting_Scheme")
+    threshold = load_threshold_sensitivity().set_index("Threshold")
     security = security_analysis()
-    validation = manuscript_validation(
-        group_summary,
-        anova,
-        alpha,
-        parameters,
-        components,
-        security,
-    )
+    power = minimum_detectable_interaction_effect().iloc[0]
+    validate_supporting_tables()
 
-    group_summary.round(4).to_csv(REPO_ROOT / "group_summary.csv", index=False)
-    anova.to_csv(REPO_ROOT / "anova_results.csv", index=False, float_format="%.10g")
-    alpha.round({"Point_Estimate": 3, "CI_Lower": 3, "CI_Upper": 3}).to_csv(
-        REPO_ROOT / "alpha_fitting.csv", index=False
+    rows: list[dict[str, str]] = []
+
+    def add(item: str, manuscript: str, computed: str, status: str = "PASS", note: str = "") -> None:
+        rows.append({"Manuscript_Item": item, "Manuscript_Value": manuscript, "Computed_or_Checked": computed, "Status": status, "Note": note})
+
+    q = quality.set_index("Group")
+    for group, target in {
+        "G1": (82.2, 4.9, 11),
+        "G2": (39.2, 12.1, 0),
+        "G3": (94.9, 3.2, 12),
+        "G4": (79.8, 4.3, 11),
+    }.items():
+        row = q.loc[group]
+        got = (round(float(row.Q_Mean), 1), round(float(row.Q_SD), 1), int(row.Success_Q75))
+        add(f"Table 4 {group}", str(target), str(got), "PASS" if got == target else "MISMATCH")
+
+    a = anova.set_index("Term")
+    expected_anova = {
+        "Tool": (8522.67, 171.2, 9.1e-17, 0.80),
+        "Schedule": (10126.83, 203.4, 4.2e-18, 0.82),
+        "Tool x Schedule": (2335.23, 46.9, 1.9e-8, 0.52),
+        "Residual": (2190.65, None, None, None),
+    }
+    for term, target in expected_anova.items():
+        row = a.loc[term]
+        if term == "Residual":
+            ok = math.isclose(float(row.SS), target[0], rel_tol=0, abs_tol=1e-8)
+            got = f"SS={row.SS:.2f}"
+        else:
+            ok = (
+                math.isclose(float(row.SS), target[0], abs_tol=1e-8)
+                and round(float(row.F), 1) == target[1]
+                and math.isclose(float(row.Partial_Eta_Squared), target[3], abs_tol=0.005)
+            )
+            got = f"SS={row.SS:.2f}; F={row.F:.4f}; p={row.p:.6g}; partial eta2={row.Partial_Eta_Squared:.4f}"
+        add(f"Table 5 {term}", str(target), got, "PASS" if ok else "MISMATCH")
+
+    s = success.set_index(["Analysis", "Contrast"])
+    g4g2 = s.loc[("Compressed-condition risk difference", "G4 minus G2")]
+    add(
+        "G4 vs G2 success contrast",
+        "RD=91.7 pp; Newcombe 95% CI 55.3-98.5; Fisher p=9.61e-6",
+        f"RD={100*g4g2.Estimate:.1f} pp; CI {100*g4g2.CI_Lower:.1f}-{100*g4g2.CI_Upper:.1f}; p={g4g2.p:.8g}",
     )
-    parameters.to_csv(REPO_ROOT / "model_parameters.csv", index=False, float_format="%.10g")
-    components.to_csv(REPO_ROOT / "quality_component_check.csv", index=False, float_format="%.4f")
-    weight_sensitivity.to_csv(REPO_ROOT / "weight_sensitivity_summary.csv", index=False)
-    security.to_csv(REPO_ROOT / "security_analysis.csv", index=False, float_format="%.10g")
+    ffh = s.loc[("Fisher-Freeman-Halton omnibus", "G1-G4 heterogeneity")]
+    add("Success omnibus exact test", "p=5.22e-9", f"p={ffh.p:.10g}")
+
+    interaction = a.loc["Tool x Schedule"]
+    add("Quality interaction", "F(1,44)=46.9; p=1.9e-8; partial eta2=0.52", f"F={interaction.F:.4f}; p={interaction.p:.8g}; partial eta2={interaction.Partial_Eta_Squared:.4f}")
+    add("Minimum detectable interaction", "f=0.4135; partial eta2=0.1460", f"f={power.Minimum_Detectable_f:.4f}; partial eta2={power.Equivalent_Partial_Eta_Squared:.4f}")
+
+    c = components.set_index("Group")
+    component_ci_max_diff = float(components.filter(like="CI_Max_Abs_Difference").to_numpy().max())
+    add("Table 6 t-interval arithmetic", "Reported endpoints consistent with conventional t-intervals from rounded means/SDs", f"maximum absolute endpoint difference={component_ci_max_diff:.4f}", "PASS" if component_ci_max_diff <= 0.011 else "MISMATCH", "A small difference is expected because Table 6 means/SDs are reported to two decimals.")
+    add("Table 6 G3 PassRate", "100.00 +/- 0.00 [100.00,100.00]", f"{c.loc['G3','PassRate_Mean']:.2f} +/- {c.loc['G3','PassRate_SD']:.2f} [{c.loc['G3','PassRate_Reported_CI_Lower']:.2f},{c.loc['G3','PassRate_Reported_CI_Upper']:.2f}]")
+    add("Table 6 G3 Coverage upper t-CI", "100.48 (not truncated)", f"{c.loc['G3','Coverage_Reported_CI_Upper']:.2f}")
+
+    add("Table 7 G4 security +0.10", "6/12", f"{int(weight.loc['Security score +0.10','G4'])}/12")
+    add("Table 8 threshold Q>=80", "G1=8, G2=0, G3=12, G4=5", f"G1={int(threshold.loc[80,'G1'])}, G2={int(threshold.loc[80,'G2'])}, G3={int(threshold.loc[80,'G3'])}, G4={int(threshold.loc[80,'G4'])}")
+
+    sec = security.set_index(["Analysis", "Contrast"])
+    pooled_ai = sec.loc[("Pooled flagged proportion", "AI-assisted")]
+    pooled_manual = sec.loc[("Pooled flagged proportion", "Manual")]
+    sec_rd = sec.loc[("Pooled flagged risk difference", "AI-assisted minus Manual")]
+    sec_int = sec.loc[("Exact Tool x Schedule interaction", "G1-G4 conditional test")]
+    triage = sec.loc[("Descriptive triage Fisher test", "8/24 AI-assisted vs 2/24 Manual")]
+    add("Security pooled AI", "14/24=58.3%; Wilson 38.8-75.5", f"{100*pooled_ai.Estimate:.1f}%; {100*pooled_ai.CI_Lower:.1f}-{100*pooled_ai.CI_Upper:.1f}")
+    add("Security pooled Manual", "6/24=25.0%; Wilson 12.0-44.9", f"{100*pooled_manual.Estimate:.1f}%; {100*pooled_manual.CI_Lower:.1f}-{100*pooled_manual.CI_Upper:.1f}")
+    add("Security pooled contrast", "RD=33.3 pp; Newcombe 5.5-54.9; Fisher p=0.039", f"RD={100*sec_rd.Estimate:.1f}; CI {100*sec_rd.CI_Lower:.1f}-{100*sec_rd.CI_Upper:.1f}; p={sec_rd.p:.6f}")
+    add("Security interaction", "exact conditional p=1.000", f"p={sec_int.p:.3f}")
+    add("SAST triage descriptive Fisher", "p=0.072", f"p={triage.p:.6f}")
+
+    add(
+        "Removed analyses",
+        "No effort ANOVA, schedule-sensitivity exponent, offloading factor, or bootstrap intervals",
+        "No such analyses are implemented or generated by this repository",
+    )
+    add(
+        "Reproducibility scope",
+        "Aggregate numerical checks only; source snapshots/scoring transforms/SAST configs unavailable",
+        "Inputs are aggregate manuscript summaries; SAST tool versions are documented separately",
+        "REPORTED_ONLY",
+    )
+    return pd.DataFrame(rows)
+
+
+def write_outputs() -> pd.DataFrame:
+    quality_summary_with_intervals().to_csv(REPO_ROOT / "quality_summary.csv", index=False, float_format="%.10g")
+    summary_based_quality_anova().to_csv(REPO_ROOT / "anova_results.csv", index=False, float_format="%.10g")
+    success_analysis().to_csv(REPO_ROOT / "success_analysis.csv", index=False, float_format="%.10g")
+    minimum_detectable_interaction_effect().to_csv(REPO_ROOT / "power_analysis.csv", index=False, float_format="%.10g")
+    component_summary_with_intervals().to_csv(REPO_ROOT / "quality_components.csv", index=False, float_format="%.10g")
+    security_analysis().to_csv(REPO_ROOT / "security_analysis.csv", index=False, float_format="%.10g")
+    validation = manuscript_validation()
     validation.to_csv(REPO_ROOT / "manuscript_validation.csv", index=False)
-    if make_figure:
-        save_alpha_figure(group_bootstrap, alpha, REPO_ROOT / "Fig4_Sensitivity.pdf")
     return validation
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--bootstrap-reps",
-        type=int,
-        default=100_000,
-        help="Bootstrap replicates for alpha intervals (default: 100000)",
-    )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    parser.add_argument(
-        "--skip-figure",
-        action="store_true",
-        help="Skip regeneration of Fig4_Sensitivity.pdf",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    validation = write_outputs(args.bootstrap_reps, args.seed, not args.skip_figure)
+    validation = write_outputs()
     counts = validation["Status"].value_counts().to_dict()
     print("Analysis completed. Validation status counts:", counts)
-    mismatches = validation[validation["Status"] == "MANUSCRIPT_MISMATCH"]
+    mismatches = validation[validation["Status"] == "MISMATCH"]
     if not mismatches.empty:
-        print("Review manuscript_validation.csv for manuscript-side statistical mismatches.")
+        raise SystemExit("Manuscript mismatches detected; inspect manuscript_validation.csv")
 
 
 if __name__ == "__main__":

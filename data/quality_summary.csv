@@ -1,0 +1,5 @@
+Group,Tool,Schedule,N,Q_Mean,Q_SD,Success_Q75
+G1,Manual,Nominal,12,82.2,4.9,11
+G2,Manual,Compressed,12,39.2,12.1,0
+G3,AI-assisted,Nominal,12,94.9,3.2,12
+G4,AI-assisted,Compressed,12,79.8,4.3,11
